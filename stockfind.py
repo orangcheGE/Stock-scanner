@@ -35,7 +35,9 @@ def get_market_sum_pages(pages, market="KOSPI"):
             soup = BeautifulSoup(res.text, 'html.parser')
             table = soup.select_one('table.type_2')
             
-            if not table: continue
+            if not table: 
+                st.warning(f"{page}페이지 테이블을 찾을 수 없습니다.")
+                continue
 
             for tr in table.select('tr'):
                 tds = tr.find_all('td')
@@ -43,45 +45,25 @@ def get_market_sum_pages(pages, market="KOSPI"):
                 a = tr.find('a', href=True)
                 if not a: continue
                 
-                code = re.search(r'code=(\d{6})', a['href']).group(1)
-                name = a.get_text(strip=True)
-                span = tds[4].find('span')
-                change = span.get_text(strip=True) if span else '0'
-                
-                codes.append(code)
-                names.append(name)
-                changes.append(change)
+                # 정규표현식 매칭 실패 방지 (Safe Search)
+                match = re.search(r'code=(\d{6})', a['href'])
+                if match:
+                    code = match.group(1)
+                    name = a.get_text(strip=True)
+                    span = tds[4].find('span')
+                    change = span.get_text(strip=True) if span else '0'
+                    
+                    codes.append(code)
+                    names.append(name)
+                    changes.append(change)
+                else:
+                    continue # 코드가 없으면 그냥 다음 행으로 이동
             
-            # 페이지 전환 간 넉넉한 휴식 (2~3초)
             time.sleep(2.5) 
         except Exception as e:
-            st.error(f"목록 로드 중 오류: {e}")
+            st.error(f"페이지 로드 중 오류: {e}")
             
     return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률(%)': changes})
-
-def get_price_data(code, max_pages=15):
-    url = f"https://finance.naver.com/item/sise_day.naver?code={code}"
-    dfs = []
-    for page in range(1, max_pages+1):
-        pg_url = f"{url}&page={page}"
-        res = requests.get(pg_url, headers=get_headers())
-        try:
-            df = pd.read_html(io.StringIO(res.text), encoding='euc-kr')[0]
-            dfs.append(df)
-        except:
-            continue
-        # 페이지별 0.5~1초 랜덤 딜레이
-        time.sleep(np.random.uniform(0.5, 1.0))
-        
-    if not dfs: return pd.DataFrame()
-    df = pd.concat(dfs, ignore_index=True).dropna(how='all')
-    df = df.rename(columns=lambda x: x.strip())
-    for col in ['종가','시가','고가','저가','거래량']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',',''), errors='coerce')
-    df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
-    return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
-
 # -------------------------
 # 분석 로직 (기존 로직 유지)
 # -------------------------
@@ -153,4 +135,5 @@ if st.sidebar.button("스캔 시작"):
     # CSV 다운로드 버튼
     csv = final_df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("결과 다운로드(CSV)", csv, "result.csv", "text/csv")
+
 
