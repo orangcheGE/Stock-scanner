@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+import io
 import numpy as np
 import time
 import re
@@ -65,7 +66,7 @@ def get_price_data(code, max_pages=15):
         pg_url = f"{url}&page={page}"
         res = requests.get(pg_url, headers=get_headers())
         try:
-            df = pd.read_html(res.text, encoding='euc-kr')[0]
+            df = pd.read_html(io.StringIO(res.text), encoding='euc-kr')[0]
             dfs.append(df)
         except:
             continue
@@ -152,3 +153,4 @@ if st.sidebar.button("스캔 시작"):
     # CSV 다운로드 버튼
     csv = final_df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("결과 다운로드(CSV)", csv, "result.csv", "text/csv")
+
