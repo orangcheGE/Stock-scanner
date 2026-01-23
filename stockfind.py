@@ -99,29 +99,35 @@ def analyze_stock(code, name, atr_multiplier_sl=2.0):
         if macd_last > macd_prev: tech_msgs.append("히스토그램 증가")
         
         # -------------------------
-        # 2. 직관적 분석 (Intuitive)
+        # 2. 직관적 분석 (Intuitive) - 방향과 에너지를 분리
         # -------------------------
         intuit_msgs = []
-        # 추세 에너지 (히스토그램 기준)
-        if macd_last > macd_prev: intuit_msgs.append("💪 에너지 충전")
-        else: intuit_msgs.append("⚠️ 브레이크 걸림")
-        
-        # 현재 위치 (이동평균선 기준)
+
+        # [방향 판단] 현재 주가가 어떤 길 위에 있는가?
         if price > ma20 and macd_last > 0:
+            main_trend = "🚀 상승 추세 유지"
             status = "홀드"
-            intuit_msgs.append("🚀 상승 기류 탑승")
         elif (prev['종가'] < prev['20MA']) and (price > ma20):
+            main_trend = "🔥 상승 엔진 점화"
             status = "적극 매수"
-            intuit_msgs.append("🔥 엔진 점화 (돌파)")
         elif abs(price - ma20)/ma20 < 0.03 and macd_last > 0:
+            main_trend = "⚓ 반등 준비 구간"
             status = "매수 관심"
-            intuit_msgs.append("⚓ 반등 준비 중")
         elif price < ma20 and macd_last < macd_prev:
+            main_trend = "🧊 하락 흐름 지속"
             status = "적극 매도"
-            intuit_msgs.append("🧊 추세 꺾임 (주의)")
         else:
+            main_trend = "🌊 방향 탐색 중"
             status = "관망"
-            intuit_msgs.append("🌊 흐름 지켜보기")
+
+        # [에너지 판단] 그 길 위에서 속도를 내는가, 줄이는가?
+        if macd_last > macd_prev:
+            energy = "📈 가속도 붙음"
+        else:
+            energy = "⚠️ 속도 줄어듦"
+
+        # 두 메시지를 합쳐서 표시 (예: 🚀 상승 추세 유지 | ⚠️ 속도 줄어듦)
+        intuit_msgs = [main_trend, energy]
 
         # 손절/익절가
         atr = last['ATR']
@@ -162,3 +168,4 @@ if st.sidebar.button("분석 시작"):
             time.sleep(np.random.uniform(1.2, 1.8))
         
         st.success("✅ 분석이 완료되었습니다!")
+
