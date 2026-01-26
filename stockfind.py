@@ -64,9 +64,12 @@ def analyze_stock(code, name, current_change):
         df = get_price_data(code)
         if df is None or len(df) < 40: return None
         
-        # 지표 계산
+        # 지표 계산 (5일선 추가)
+        df['5MA'] = df['종가'].rolling(5).mean()
         df['20MA'] = df['종가'].rolling(20).mean()
         df['V_MA5'] = df['거래량'].rolling(5).mean()
+        
+        # MACD 계산
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
@@ -75,50 +78,46 @@ def analyze_stock(code, name, current_change):
         prev = df.iloc[-2]
         prev2 = df.iloc[-3]
         
-        # 최근 5일 데이터 (추세 확인용)
-        last_5_days = df.iloc[-5:]
-        # 5일 내내 종가가 20일선 위에 있었는지 체크
-        is_above_5d = (last_5_days['종가'] > last_5_days['20MA']).all()
-        
-        price, ma20 = last['종가'], last['20MA']
+        # 데이터 추출
+        price, ma5, ma20 = last['종가'], last['5MA'], last['20MA']
         m_curr, m_prev, m_prev2 = last['MACD_hist'], prev['MACD_hist'], prev2['MACD_hist']
         vol_ratio = (last['거래량'] / last['V_MA5']) if last['V_MA5'] > 0 else 1
         vol_pct = (vol_ratio - 1) * 100
-        disparity = ((price / ma20) - 1) * 100
         
+        # --- [로직 업데이트] 5일선/20일선 이중 추세 분석 ---
         status, trend = "관망", "🌊 방향 탐색 중"
-        
-        # 1. 주가가 20일선 위에 있는 경우
-        if price > ma20:
-            # 강력 매도 (MACD 플러스에서 마이너스로 확정 전환 시에만)
-            if m_prev > 0 and m_curr <= 0:
-                status, trend = "강력 매도", "🚨 에너지 데드크로스 발생 (추세 반전)"
-            
-            # [사용자 피드백 반영] 에너지가 2일 하락하더라도 5일간 추세선 위라면 '홀드'
-            elif m_curr > 0 and (m_curr < m_prev < m_prev2):
-                if is_above_5d:
-                    status, trend = "홀드", "📈 에너지는 쉬어가나 추세선 위 안착 중"
-                else:
-                    status, trend = "매도 관심", "⚠️ 추세 불안정 + 에너지 둔화"
-            
-            # 매수 신호 (수급 중심)
-            elif m_curr > m_prev:
-                if vol_pct >= 100: status, trend = "강력 매수", "🚀 압도적 수급 + 추세 강화"
-                elif 20 <= vol_pct < 100: status, trend = "적극 매수", "🔥 수급 동반 우상향"
-                else: status, trend = "안전 매수", "✅ 추세 유지 및 점진적 상승"
-            
-            else:
-                status, trend = "홀드", "📈 안정적 흐름 유지"
 
-        # 2. 주가가 20일선 아래에 있는 경우
-        elif price < ma20:
-            if m_curr < m_prev: status, trend = "하락 가속", "🧊 하락 추세 진행 (신규 진입 금지)"
-            elif m_curr > m_prev: status, trend = "회복 기대", "🌅 바닥권 에너지 반전 시도"
+        # 1. 강력 매도 (에너지 전환: 플러스 -> 마이너스)
+        if m_prev > 0 and m_curr <= 0:
+            status, trend = "강력 매도", "🚨 MACD 데드크로스 (하락 전환 확정)"
+
+        # 2. 가격이 20일선 위에 있을 때 (상승 추세권)
+        elif price >= ma20:
+            # 5일선 이탈 여부 체크 (사용자 피드백 핵심 반영)
+            if price < ma5:
+                status, trend = "추세 이탈", "⚠️ 5일선 하향 이탈 (단기 기세 꺾임)"
+                if m_curr < m_prev:
+                    trend += " | 에너지 감소 중"
+            
+            # 5일선 위에서 안착 중인 경우
+            else:
+                if m_curr > m_prev:
+                    if vol_pct >= 50: status, trend = "강력 매수", "🚀 수급+5일선 타고 상승"
+                    else: status, trend = "안전 매수", "✅ 5일선 위 안정적 상승"
+                else:
+                    status, trend = "홀드", "📈 5일선/20일선 위 안착 유지"
+
+        # 3. 가격이 20일선 아래에 있을 때 (하락 추세권)
+        else:
+            if m_curr < m_prev:
+                status, trend = "하락 가속", "🧊 20일선 아래 하락세 지속"
+            else:
+                status, trend = "회복 기대", "🌅 20일선 돌파 시도 중"
 
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
         vol_display = f"{int(vol_pct)}% ↑" if vol_pct >= 0 else f"{int(abs(vol_pct))}% ↓"
         
-        return [code, name, current_change, int(price), int(ma20), vol_display, f"{round(disparity, 2)}%", status, f"{trend}", chart_url]
+        return [code, name, current_change, int(price), int(ma5), int(ma20), vol_display, status, trend, chart_url]
     except: return None
 
 # --- UI 스타일링 ---
@@ -185,4 +184,5 @@ if 'df_all' in st.session_state:
     elif st.session_state.filter == "관심": display_df = df[df['상태'].str.contains("관심|경계")]
     elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("강력 매도")]
     with main_area: show_styled_dataframe(display_df)
+
 
