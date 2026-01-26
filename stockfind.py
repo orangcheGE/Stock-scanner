@@ -64,61 +64,92 @@ def analyze_stock(code, name, current_change):
         df = get_price_data(code)
         if df is None or len(df) < 40: return None
         
-        # 지표 계산 (5일선 추가)
+        # 1. 지표 계산
         df['5MA'] = df['종가'].rolling(5).mean()
         df['20MA'] = df['종가'].rolling(20).mean()
         df['V_MA5'] = df['거래량'].rolling(5).mean()
         
-        # MACD 계산
+        # MACD (에너지 흐름)
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
         
+        # 최신 및 이전 데이터 추출
         last = df.iloc[-1]
         prev = df.iloc[-2]
         prev2 = df.iloc[-3]
         
-        # 데이터 추출
-        price, ma5, ma20 = last['종가'], last['5MA'], last['20MA']
-        m_curr, m_prev, m_prev2 = last['MACD_hist'], prev['MACD_hist'], prev2['MACD_hist']
-        vol_ratio = (last['거래량'] / last['V_MA5']) if last['V_MA5'] > 0 else 1
-        vol_pct = (vol_ratio - 1) * 100
+        # 2. 정밀 수치 계산
+        price = float(last['종가'])
+        v_ma5 = float(last['V_MA5'])
+        vol_now = float(last['거래량'])
         
-        # --- [로직 업데이트] 5일선/20일선 이중 추세 분석 ---
+        # 거래량 증가율 (0% 기준, +50%면 평균의 1.5배)
+        vol_change_pct = ((vol_now / v_ma5) - 1) * 100 if v_ma5 > 0 else 0
+        
+        # 이격률 (0% 기준, +19%면 이평선보다 19% 떠 있음)
+        gap_5ma = ((price / last['5MA']) - 1) * 100
+        gap_20ma = ((price / last['20MA']) - 1) * 100
+        
+        m_curr, m_prev, m_prev2 = last['MACD_hist'], prev['MACD_hist'], prev2['MACD_hist']
+        
+        # 3. 상태 진단 로직 (사용자 피드백 반영: 이격률 리스크 우선)
         status, trend = "관망", "🌊 방향 탐색 중"
 
-        # 1. 강력 매도 (에너지 전환: 플러스 -> 마이너스)
+        # [필터 1] 강력 매도: 에너지가 플러스에서 마이너스로 꺾일 때 (최우선 경고)
         if m_prev > 0 and m_curr <= 0:
-            status, trend = "강력 매도", "🚨 MACD 데드크로스 (하락 전환 확정)"
+            status, trend = "강력 매도", "🚨 하락 전환 확정 (MACD Flip)"
 
-        # 2. 가격이 20일선 위에 있을 때 (상승 추세권)
-        elif price >= ma20:
-            # 5일선 이탈 여부 체크 (사용자 피드백 핵심 반영)
-            if price < ma5:
-                status, trend = "추세 이탈", "⚠️ 5일선 하향 이탈 (단기 기세 꺾임)"
-                if m_curr < m_prev:
-                    trend += " | 에너지 감소 중"
+        # [필터 2] 가격이 20일선 위에 있는 상승 구간
+        elif price >= last['20MA']:
             
-            # 5일선 위에서 안착 중인 경우
-            else:
-                if m_curr > m_prev:
-                    if vol_pct >= 50: status, trend = "강력 매수", "🚀 수급+5일선 타고 상승"
-                    else: status, trend = "안전 매수", "✅ 5일선 위 안정적 상승"
+            # (A) 과열 진단: 이격률이 너무 높을 때 (15% 이상)
+            if gap_20ma >= 15:
+                status, trend = "과열 주의", f"🔥 이격 과다({round(gap_20ma,1)}%) / 추격 금지"
+            
+            # (B) 단기 이탈: 5일선을 깨고 내려올 때
+            elif price < last['5MA']:
+                status, trend = "추세 이탈", "⚠️ 5일선 하회 (단기 기세 꺾임)"
+            
+            # (C) 정상 범위 내 상승 (안전/적극 매수)
+            elif m_curr > m_prev:
+                # 20일선과 7% 이내일 때만 '안전' 라벨 허용
+                if gap_20ma <= 7:
+                    if vol_change_pct >= 50: 
+                        status, trend = "적극 매수", "🚀 낮은 이격 + 수급 폭발"
+                    else: 
+                        status, trend = "안전 매수", "✅ 추세 전환 및 안착"
                 else:
-                    status, trend = "홀드", "📈 5일선/20일선 위 안착 유지"
+                    status, trend = "추세 보유", "📈 시세 확장 중 (보유자 영역)"
+            
+            # (D) 에너지 둔화 (에너지 2일 연속 하락)
+            elif m_curr < m_prev < m_prev2:
+                status, trend = "홀드(주의)", "📉 에너지 감속 중"
+            
+            else:
+                status, trend = "홀드", "📈 안정적 흐름 유지"
 
-        # 3. 가격이 20일선 아래에 있을 때 (하락 추세권)
+        # [필터 3] 가격이 20일선 아래에 있는 하락 구간
         else:
             if m_curr < m_prev:
-                status, trend = "하락 가속", "🧊 20일선 아래 하락세 지속"
+                status, trend = "하락 가속", "🧊 하락세 지속 (접근 금지)"
             else:
-                status, trend = "회복 기대", "🌅 20일선 돌파 시도 중"
+                status, trend = "회복 기대", "🌅 바닥 다지기 및 반등 시도"
 
+        # 결과 데이터 구성
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
-        vol_display = f"{int(vol_pct)}% ↑" if vol_pct >= 0 else f"{int(abs(vol_pct))}% ↓"
-        
-        return [code, name, current_change, int(price), int(ma5), int(ma20), vol_display, status, trend, chart_url]
-    except: return None
+        def fmt_pct(val): return f"{'+' if val > 0 else ''}{round(val, 1)}%"
+
+        return [
+            code, name, current_change, 
+            int(price), 
+            fmt_pct(vol_change_pct), 
+            fmt_pct(gap_5ma), 
+            fmt_pct(gap_20ma), 
+            status, trend, chart_url
+        ]
+    except Exception as e:
+        return None
 
 # --- UI 스타일링 ---
 def show_styled_dataframe(dataframe):
@@ -184,5 +215,6 @@ if 'df_all' in st.session_state:
     elif st.session_state.filter == "관심": display_df = df[df['상태'].str.contains("관심|경계")]
     elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("강력 매도")]
     with main_area: show_styled_dataframe(display_df)
+
 
 
