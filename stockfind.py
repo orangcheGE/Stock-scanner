@@ -87,7 +87,7 @@ def analyze_stock(code, name, current_change):
         status, trend = "관망", "🌊 방향 탐색"
 
         if disparity >= 12:
-            status, trend = "과열 주의", "🔥 이격 과다 (추격 금지)"
+            status, trend = "과열 주의", "🔥 이격 과다 (추격 매수시 주의)"
         elif price > ma20:
             if price < ma5:
                 status, trend = "추세 이탈", "⚠️ 5일선 하회 (주의)"
@@ -212,4 +212,5 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
