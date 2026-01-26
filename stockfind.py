@@ -134,7 +134,7 @@ def show_styled_dataframe(dataframe):
         hide_index=True
     )
 
-st.title("🛡️ 수급/이격 정밀 진단 v4.0")
+st.title("🛡️ 20일선 스마트 데이터 스캐너")
 if st.sidebar.button("🚀 분석 시작"):
     market_df = get_market_sum_pages([1], "KOSPI")
     results = [analyze_stock(c, n, r) for c, n, r in zip(market_df['종목코드'], market_df['종목명'], market_df['등락률'])]
@@ -144,3 +144,4 @@ if st.sidebar.button("🚀 분석 시작"):
     cols = ['코드', '종목명', '등락률', '현재가', '20MA', '거래량증가', '이격률', '상태', '해석', '차트']
     st.session_state.df_all = pd.DataFrame(results, columns=cols)
     show_styled_dataframe(st.session_state.df_all)
+
