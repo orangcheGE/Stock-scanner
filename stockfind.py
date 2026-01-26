@@ -9,8 +9,8 @@ import io
 import urllib.parse
 from datetime import datetime
 
-# 페이지 설정
-st.set_page_config(page_title="실전 20일선 종합 대시보드", layout="wide")
+# 1. 페이지 설정
+st.set_page_config(page_title="20일선 스마트 대시보드", layout="wide")
 
 def get_headers():
     return {
@@ -19,7 +19,7 @@ def get_headers():
     }
 
 # -------------------------
-# 1. 데이터 수집 함수
+# 2. 데이터 수집 함수
 # -------------------------
 def get_market_sum_pages(page_list, market="KOSPI"):
     sosok = 0 if market == "KOSPI" else 1
@@ -42,7 +42,7 @@ def get_market_sum_pages(page_list, market="KOSPI"):
                     codes.append(match.group(1))
                     names.append(a.get_text(strip=True))
                     changes.append(tds[4].get_text(strip=True))
-            time.sleep(0.7)
+            time.sleep(0.5)
         except: continue
     return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률': changes})
 
@@ -55,7 +55,7 @@ def get_price_data(code, max_pages=15):
             df_list = pd.read_html(io.StringIO(res.text), encoding='euc-kr')
             if df_list: dfs.append(df_list[0])
         except: continue
-        time.sleep(0.15)
+        time.sleep(0.1)
     if not dfs: return pd.DataFrame()
     df = pd.concat(dfs, ignore_index=True).dropna(how='all')
     df = df.rename(columns=lambda x: x.strip())
@@ -66,7 +66,7 @@ def get_price_data(code, max_pages=15):
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
 # -------------------------
-# 2. 분석 로직 (이격률 표기 수정)
+# 3. 분석 로직 (스마트 진단 추가)
 # -------------------------
 def analyze_stock(code, name, current_change):
     try:
@@ -77,49 +77,45 @@ def analyze_stock(code, name, current_change):
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
-        
-        df['tr'] = np.maximum(df['고가'] - df['저가'], 
-                              np.maximum(abs(df['고가'] - df['종가'].shift(1)), 
-                                         abs(df['저가'] - df['종가'].shift(1))))
+        df['tr'] = np.maximum(df['고가'] - df['저가'], np.maximum(abs(df['고가'] - df['종가'].shift(1)), abs(df['저가'] - df['종가'].shift(1))))
         df['ATR'] = df['tr'].rolling(14).mean()
 
         last, prev = df.iloc[-1], df.iloc[-2]
-        price, ma20 = last['종가'], last['20MA']
-        macd_last, macd_prev = last['MACD_hist'], prev['MACD_hist']
+        price, ma20, macd_last, macd_prev = last['종가'], last['20MA'], last['MACD_hist'], prev['MACD_hist']
         
-        # [수정된 이격률 계산] 0% 기준으로 상하 표시
         diff = price - ma20
         disparity = ((price / ma20) - 1) * 100
-        disparity_text = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
-        
+        disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
         sl_tp = f"{int(price - last['ATR']*2)} / {int(price + last['ATR']*2)}" if pd.notna(last['ATR']) else "- / -"
 
-        # 상태 판단 로직
+        # --- 진단 로직 (사용자 요청 반영) ---
         if price > ma20 and macd_last > 0:
-            status, main_trend = "홀드", "🚀 상승 유지"
+            # [추가 아이디어] 상승 유지 중 이격률 0~3% 이내 (안정적 상승 구간)
+            if 0 <= disparity <= 3:
+                status, trend = "추가 매수 가능", "🚀 상승세 안정적 (추가 상승 여력)"
+            else:
+                status, trend = "홀드", "📈 상승 추세 유지"
         elif (prev['종가'] < prev['20MA']) and (price > ma20):
-            status, main_trend = "적극 매수", "🔥 엔진 점화"
+            status, trend = "적극 매수", "🔥 골든크로스 / 엔진 점화"
         elif abs(price - ma20)/ma20 < 0.03 and macd_last > 0:
-            status, main_trend = "매수 관심", "⚓ 반등 준비"
+            status, trend = "매수 관심", "⚓ 20일선 지지 / 반등 준비"
         elif price < ma20 and macd_last < macd_prev:
-            status, main_trend = "적극 매도", "🧊 추세 꺾임"
+            status, trend = "적극 매도", "🧊 추세 하락 지속"
+        elif price < ma20 and macd_last > macd_prev:
+            status, trend = "매도 관망", "☁️ 하락 중 반등 모색"
         else:
-            status, main_trend = "관망", "🌊 방향 탐색"
+            status, trend = "관망", "🌊 방향 탐색 중"
 
-        energy_msg = "📈 가속" if macd_last > macd_prev else "⚠️ 감속"
+        energy = "📈 가속" if macd_last > macd_prev else "⚠️ 감속"
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
 
-        return [
-            code, name, current_change, int(price), int(ma20), 
-            int(diff), disparity_text, sl_tp, status, 
-            f"{main_trend} | {energy_msg}", chart_url
-        ]
+        return [code, name, current_change, int(price), int(ma20), int(diff), disparity_fmt, sl_tp, status, f"{trend} | {energy}", chart_url]
     except: return None
 
 # -------------------------
-# 3. UI 실행부
+# 4. UI 실행부 (필터링 버튼 포함)
 # -------------------------
-st.title("🛡️ 20일선 종합 데이터 스캐너")
+st.title("🛡️ 20일선 스마트 데이터 스캐너")
 
 st.sidebar.header("설정")
 market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
@@ -129,56 +125,61 @@ if st.sidebar.button("분석 시작"):
     if not selected_pages:
         st.warning("페이지를 선택해 주세요.")
     else:
-        st.info(f"📊 {market} 분석을 시작합니다.")
+        st.info(f"📊 {market} 분석 시작...")
         market_df = get_market_sum_pages(selected_pages, market)
-        
         if not market_df.empty:
             results = []
             progress_bar = st.progress(0)
             result_area = st.empty()
-            
             for i, (idx, row) in enumerate(market_df.iterrows()):
                 res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
                 if res:
                     results.append(res)
-                    df_curr = pd.DataFrame(results, columns=[
-                        '코드', '종목명', '등락률', '현재가', '20MA', 
-                        '차이', '이격률', '손절/익절', '상태', '해석', '차트'
-                    ])
-                    
-                    # 실시간 테이블 스타일링 (이격률도 색상 적용 가능)
-                    result_area.dataframe(
-                        df_curr.style.applymap(
-                            lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''),
-                            subset=['상태']
-                        ).applymap(
-                            lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''),
-                            subset=['등락률', '이격률']
-                        ),
-                        use_container_width=True,
-                        column_config={"차트": st.column_config.LinkColumn("차트", display_text="열기")},
-                        hide_index=True
-                    )
+                    df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '해석', '차트'])
+                    result_area.dataframe(df_all, use_container_width=True, hide_index=True)
                 progress_bar.progress((i + 1) / len(market_df))
-            
-            st.success("✅ 모든 분석이 완료되었습니다!")
-            st.session_state['final_df'] = df_curr
+            st.success("✅ 분석 완료!")
+            st.session_state['df_all'] = df_all
 
-# --- Outlook 버튼 ---
-if 'final_df' in st.session_state:
+# --- 필터링 및 출력 ---
+if 'df_all' in st.session_state:
+    df = st.session_state['df_all']
     st.markdown("---")
-    st.subheader("📬 결과를 이메일로 보내기")
-    df = st.session_state['final_df']
-    buys = df[df['상태'].str.contains("매수")][['종목명', '현재가', '이격률', '해석']]
     
-    email_text = f"📊 주식 분석 결과 ({datetime.now().strftime('%m-%d %H:%M')})\n\n"
-    if not buys.empty:
-        email_text += "[매수 신호 종목]\n"
-        for _, r in buys.iterrows():
-            email_text += f"- {r['종목명']}: {r['현재가']}원 (이격:{r['이격률']}) - {r['해석']}\n"
+    # 요약 카드 출력
+    c1, c2, c3 = st.columns(3)
+    c1.metric("전체 종목", f"{len(df)}개")
+    c2.metric("매수 신호", f"{len(df[df['상태'].str.contains('매수')])}개", delta_color="normal")
+    c3.metric("매도 신호", f"{len(df[df['상태'].str.contains('매도')])}개", delta_color="inverse")
+
+    # 필터 버튼
+    col1, col2, col3 = st.columns(3)
+    show_all = col1.button("🔄 전체 보기", use_container_width=True)
+    show_buy = col2.button("🔴 매수 관련만 보기", use_container_width=True)
+    show_sell = col3.button("🔵 매도 관련만 보기", use_container_width=True)
+
+    # 필터 로직 적용
+    display_df = df.copy()
+    if show_buy:
+        display_df = df[df['상태'].str.contains("매수")]
+    elif show_sell:
+        display_df = df[df['상태'].str.contains("매도")]
     
-    subject = urllib.parse.quote(f"주식 리포트_{datetime.now().strftime('%m%d')}")
-    body = urllib.parse.quote(email_text)
-    st.markdown(f'<a href="mailto:?subject={subject}&body={body}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 Outlook으로 요약 전송</div></a>', unsafe_allow_html=True)
+    st.subheader("🔍 필터링 결과")
+    st.dataframe(
+        display_df.style.applymap(
+            lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''),
+            subset=['상태']
+        ).applymap(
+            lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''),
+            subset=['등락률', '이격률']
+        ),
+        use_container_width=True,
+        column_config={"차트": st.column_config.LinkColumn("차트", display_text="열기")},
+        hide_index=True
+    )
 
-
+    # Outlook 버튼 (필터링된 결과 기반으로 본문 자동 구성)
+    encoded_body = urllib.parse.quote(f"분석 결과 요약:\n\n" + display_df[['종목명', '상태', '해석']].to_string(index=False))
+    mailto_url = f"mailto:?subject=주식분석결과&body={encoded_body}"
+    st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 현재 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
