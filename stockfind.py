@@ -9,7 +9,7 @@ import io
 import urllib.parse
 
 # 1. 페이지 설정
-st.set_page_config(page_title="20일선 수급 정밀 스캐너", layout="wide")
+st.set_page_config(page_title="20일선 정밀 진단 시스템", layout="wide")
 
 def get_headers():
     return {
@@ -17,68 +17,7 @@ def get_headers():
         'Referer': 'https://finance.naver.com/'
     }
 
-# --- 데이터 분석 로직 ---
-def analyze_stock(code, name, current_change):
-    try:
-        df = get_price_data(code)
-        if df is None or len(df) < 40: return None
-        
-        # 지표 계산
-        df['20MA'] = df['종가'].rolling(20).mean()
-        df['V_MA5'] = df['거래량'].rolling(5).mean()
-        ema12 = df['종가'].ewm(span=12, adjust=False).mean()
-        ema26 = df['종가'].ewm(span=26, adjust=False).mean()
-        df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
-        
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        # 턴어라운드/추세 확인 (최근 5일)
-        last_5_ma20 = df['20MA'].iloc[-5:].values
-        is_turning_up = last_5_ma20[-1] > last_5_ma20[-2]
-        
-        # 수급 계산 (사용자 요청 반영: 20-100%, 100-150%, 150%+)
-        vol_ratio = (last['거래량'] / last['V_MA5']) if last['V_MA5'] > 0 else 1
-        vol_increase_pct = (vol_ratio - 1) * 100
-        
-        price, ma20 = last['종가'], last['20MA']
-        disparity = ((price / ma20) - 1) * 100
-        
-        # --- [로직 업데이트] 수급 강도 세분화 진단 ---
-        status, trend = "관망", "🌊 방향 탐색"
-        
-        if price > ma20:
-            # A. 수급 폭발 (150% 초과)
-            if vol_increase_pct >= 50: # 평균 대비 1.5배 이상
-                status, trend = "강력 매수", "🚀 폭발적 수급 + 강력 돌파"
-            
-            # B. 강력 수급 (100-150% 상승 즉, 2배-2.5배) - 사용자 피드백 반영: 100% 이상 상승 시
-            elif 100 <= vol_increase_pct < 150:
-                status, trend = "적극 매수", "🔥 강력한 수급 동반 상승"
-            
-            # C. 수급 개선 (20-100% 상승 즉, 1.2배-2배)
-            elif 20 <= vol_increase_pct < 100:
-                if is_turning_up:
-                    status, trend = "안전 매수", "✅ 점진적 수급 개선 + 턴어라운드"
-                else:
-                    status, trend = "매수 검토", "📈 수급 개선 중이나 추세 확인 필요"
-            
-            # D. 수급 부족
-            else:
-                status, trend = "홀드", "📉 추세 유지 중이나 수급 약함"
-        
-        # 역배열에서의 에너지 반전 (바닥 탈출 신호)
-        elif price < ma20 and df['MACD_hist'].iloc[-1] > df['MACD_hist'].iloc[-2]:
-            if vol_increase_pct >= 20:
-                status, trend = "회복 기대", "🌅 바닥 수급 유입 + 반등 준비"
-
-        chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
-        vol_display = f"{int(vol_increase_pct)}% ↑" if vol_increase_pct >= 0 else f"{int(abs(vol_increase_pct))}% ↓"
-        
-        return [code, name, current_change, int(price), int(ma20), vol_display, f"{round(disparity, 2)}%", status, f"{trend}", chart_url]
-    except: return None
-
-# --- 보조 함수 및 UI (이전 기능 통합) ---
+# --- 데이터 수집 함수 ---
 def get_price_data(code, max_pages=15):
     url = f"https://finance.naver.com/item/sise_day.naver?code={code}"
     dfs = []
@@ -115,35 +54,97 @@ def get_market_sum_pages(page_list, market="KOSPI"):
                 match = re.search(r'code=(\d{6})', a['href'])
                 if match:
                     codes.append(match.group(1)); names.append(a.get_text(strip=True)); changes.append(tds[4].get_text(strip=True))
-            time.sleep(0.2)
+            time.sleep(0.15)
         except: continue
     return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률': changes})
 
+# --- [핵심] 정밀 분석 로직 ---
+def analyze_stock(code, name, current_change):
+    try:
+        df = get_price_data(code)
+        if df is None or len(df) < 40: return None
+        
+        # 지표 계산
+        df['20MA'] = df['종가'].rolling(20).mean()
+        df['V_MA5'] = df['거래량'].rolling(5).mean()
+        ema12 = df['종가'].ewm(span=12, adjust=False).mean()
+        ema26 = df['종가'].ewm(span=26, adjust=False).mean()
+        df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
+        
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        prev2 = df.iloc[-3]
+        
+        # 데이터 추출
+        price, ma20 = last['종가'], last['20MA']
+        m_curr, m_prev, m_prev2 = last['MACD_hist'], prev['MACD_hist'], prev2['MACD_hist']
+        vol_ratio = (last['거래량'] / last['V_MA5']) if last['V_MA5'] > 0 else 1
+        vol_pct = (vol_ratio - 1) * 100
+        disparity = ((price / ma20) - 1) * 100
+        
+        status, trend = "관망", "🌊 방향 탐색 중"
+        
+        # 🟢 매수 및 유지 로직
+        if price > ma20 and m_curr > m_prev:
+            if vol_pct >= 100: status, trend = "강력 매수", "🚀 압도적 수급 + 추세 강화"
+            elif 20 <= vol_pct < 100: status, trend = "적극 매수", "🔥 수급 동반 우상향"
+            else: status, trend = "안전 매수", "✅ 추세 유지 및 점진적 상승"
+            
+        # 🟡 매도 관심 (0 위에서 2일 이상 하락 + 물량 감소)
+        elif m_curr > 0 and (m_curr < m_prev < m_prev2):
+            if vol_pct < 0: status, trend = "매도 관심", "⚠️ 탄력 둔화 (에너지 2일 하락 + 물량 실종)"
+            else: status, trend = "보유 경계", "📉 고점 부근 에너지 감속 중"
+            
+        # 🔴 강력 매도 (MACD 플러스에서 마이너스로 전환 확정)
+        if m_prev > 0 and m_curr <= 0:
+            status, trend = "강력 매도", "🚨 에너지 데드크로스 발생 (추세 반전)"
+            
+        # 🔵 하락 추세 및 바닥 반등
+        elif price < ma20:
+            if m_curr < m_prev: status, trend = "하락 가속", "🧊 하락 추세 진행 (신규 진입 금지)"
+            elif m_curr > m_prev: status, trend = "회복 기대", "🌅 바닥권 에너지 반전 시도"
+
+        chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
+        vol_display = f"{int(vol_pct)}% ↑" if vol_pct >= 0 else f"{int(abs(vol_pct))}% ↓"
+        
+        return [code, name, current_change, int(price), int(ma20), vol_display, f"{round(disparity, 2)}%", status, f"{trend}", chart_url]
+    except: return None
+
+# --- UI 스타일링 ---
 def show_styled_dataframe(dataframe):
     if dataframe.empty: return
+    def color_status(val):
+        if '강력 매수' in val: return 'background-color: #ffcccc; color: #cc0000; font-weight: bold'
+        if '적극 매수' in val or '안전 매수' in val: return 'color: #ef5350; font-weight: bold'
+        if '강력 매도' in val: return 'background-color: #cce5ff; color: #004085; font-weight: bold'
+        if '매도 관심' in val or '하락 가속' in val: return 'color: #42a5f5; font-weight: bold'
+        return ''
+
     st.dataframe(
-        dataframe.style.applymap(lambda x: 'color: #ef5350; font-weight: bold' if any(keyword in str(x) for keyword in ['적극', '안전', '강력', '매수']) else ('color: #42a5f5' if '매도' in str(x) else ''), subset=['상태'])
+        dataframe.style.applymap(color_status, subset=['상태'])
         .applymap(lambda x: 'color: #ef5350' if '+' in str(x) or '↑' in str(x) else ('color: #42a5f5' if '-' in str(x) or '↓' in str(x) else ''), subset=['등락률', '이격률', '거래량증가']),
         use_container_width=True,
         column_config={"차트": st.column_config.LinkColumn("차트", display_text="열기"), "코드": st.column_config.TextColumn("코드", width="small")},
         hide_index=True
     )
 
-# --- UI 메인 ---
-st.title("🛡️ 수급 강도 정밀 스캐너")
-st.sidebar.header("설정")
+# --- 메인 실행 UI ---
+st.title("🛡️ 실전형 수급 & 에너지 정밀 스캐너")
+st.sidebar.header("🔍 분석 설정")
 market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
-selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
+selected_pages = st.sidebar.multiselect("분석 페이지 (1p=50개)", options=list(range(1, 41)), default=[1])
 start_btn = st.sidebar.button("🚀 정밀 분석 시작")
 
-st.subheader("📊 분석 현황")
-c1, c2, c3 = st.columns(3)
-total_m = c1.empty(); buy_m = c2.empty(); sell_m = c3.empty()
+st.subheader("📊 리얼타임 시장 진단")
+c1, c2, c3, c4 = st.columns(4)
+total_m = c1.empty(); buy_m = c2.empty(); watch_m = c3.empty(); sell_m = c4.empty()
+
 if 'filter' not in st.session_state: st.session_state.filter = "전체"
-col1, col2, col3 = st.columns(3)
-if col1.button("🔄 전체", use_container_width=True): st.session_state.filter = "전체"
-if col2.button("🔴 매수 추천", use_container_width=True): st.session_state.filter = "매수"
-if col3.button("🔵 매도 추천", use_container_width=True): st.session_state.filter = "매도"
+col1, col2, col3, col4 = st.columns(4)
+if col1.button("🔄 전체 리스트", use_container_width=True): st.session_state.filter = "전체"
+if col2.button("🔴 매수 추천 (적극/안전)", use_container_width=True): st.session_state.filter = "매수"
+if col3.button("🟡 매도 관심 (탄력둔화)", use_container_width=True): st.session_state.filter = "관심"
+if col4.button("🔵 강력 매도 (추세파괴)", use_container_width=True): st.session_state.filter = "매도"
 
 main_area = st.empty()
 
@@ -158,18 +159,18 @@ if start_btn:
                 results.append(res)
                 df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '거래량증가', '이격률', '상태', '해석', '차트'])
                 st.session_state['df_all'] = df_all
-                total_m.metric("분석 종목", f"{len(df_all)}개")
-                buy_m.metric("매수 추천", f"{len(df_all[df_all['상태'].str.contains('매수|회복|강력')])}개")
-                sell_m.metric("매도 추천", f"{len(df_all[df_all['상태'].str.contains('매도')])}개")
+                total_m.metric("분석 대상", f"{len(df_all)}개")
+                buy_m.metric("매수 추천", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
+                watch_m.metric("매도 관심", f"{len(df_all[df_all['상태'].str.contains('관심|경계')])}개")
+                sell_m.metric("강력 매도", f"{len(df_all[df_all['상태'].str.contains('강력 매도')])}개")
                 with main_area: show_styled_dataframe(df_all)
             progress.progress((i + 1) / len(market_df))
-        st.success("✅ 분석 완료")
+        st.success("✅ 진단이 완료되었습니다.")
 
 if 'df_all' in st.session_state:
     df = st.session_state['df_all']
     display_df = df.copy()
-    if st.session_state.filter == "매수": display_df = df[df['상태'].str.contains("매수|회복|강력")]
-    elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("매도")]
+    if st.session_state.filter == "매수": display_df = df[df['상태'].str.contains("매수")]
+    elif st.session_state.filter == "관심": display_df = df[df['상태'].str.contains("관심|경계")]
+    elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("강력 매도")]
     with main_area: show_styled_dataframe(display_df)
-
-
