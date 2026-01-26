@@ -41,9 +41,7 @@ def get_market_sum_pages(page_list, market="KOSPI"):
                 if match:
                     codes.append(match.group(1))
                     names.append(a.get_text(strip=True))
-                    # 등락률 텍스트 추출 (예: +1.23%)
-                    change_text = tds[4].get_text(strip=True)
-                    changes.append(change_text)
+                    changes.append(tds[4].get_text(strip=True))
             time.sleep(0.7)
         except: continue
     return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률': changes})
@@ -68,37 +66,35 @@ def get_price_data(code, max_pages=15):
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
 # -------------------------
-# 2. 분석 로직 (전체 지표 통합)
+# 2. 분석 로직 (이격률 표기 수정)
 # -------------------------
 def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
         if df is None or len(df) < 40: return None
 
-        # 지표 계산
         df['20MA'] = df['종가'].rolling(20).mean()
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
         
-        # ATR 계산 (기존 로직 유지)
         df['tr'] = np.maximum(df['고가'] - df['저가'], 
                               np.maximum(abs(df['고가'] - df['종가'].shift(1)), 
                                          abs(df['저가'] - df['종가'].shift(1))))
         df['ATR'] = df['tr'].rolling(14).mean()
 
         last, prev = df.iloc[-1], df.iloc[-2]
-        price = last['종가']
-        ma20 = last['20MA']
+        price, ma20 = last['종가'], last['20MA']
         macd_last, macd_prev = last['MACD_hist'], prev['MACD_hist']
-        atr = last['ATR']
         
-        # 수치 지표 계산
-        diff = price - ma20  # 차이
-        disparity = (price / ma20) * 100  # 이격률
-        sl_tp = f"{int(price - atr*2)} / {int(price + atr*2)}" if pd.notna(atr) else "- / -"
+        # [수정된 이격률 계산] 0% 기준으로 상하 표시
+        diff = price - ma20
+        disparity = ((price / ma20) - 1) * 100
+        disparity_text = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
+        
+        sl_tp = f"{int(price - last['ATR']*2)} / {int(price + last['ATR']*2)}" if pd.notna(last['ATR']) else "- / -"
 
-        # 해석 로직 (기존 유지)
+        # 상태 판단 로직
         if price > ma20 and macd_last > 0:
             status, main_trend = "홀드", "🚀 상승 유지"
         elif (prev['종가'] < prev['20MA']) and (price > ma20):
@@ -113,10 +109,9 @@ def analyze_stock(code, name, current_change):
         energy_msg = "📈 가속" if macd_last > macd_prev else "⚠️ 감속"
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
 
-        # 컬럼 순서: 코드, 종목명, 등락률, 현재가, 20MA, 차이, 이격률, 손절/익절, 상태, 해석, 차트
         return [
             code, name, current_change, int(price), int(ma20), 
-            int(diff), round(disparity, 2), sl_tp, status, 
+            int(diff), disparity_text, sl_tp, status, 
             f"{main_trend} | {energy_msg}", chart_url
         ]
     except: return None
@@ -134,7 +129,7 @@ if st.sidebar.button("분석 시작"):
     if not selected_pages:
         st.warning("페이지를 선택해 주세요.")
     else:
-        st.info(f"📊 {market} 분석을 시작합니다. (페이지: {selected_pages})")
+        st.info(f"📊 {market} 분석을 시작합니다.")
         market_df = get_market_sum_pages(selected_pages, market)
         
         if not market_df.empty:
@@ -151,14 +146,14 @@ if st.sidebar.button("분석 시작"):
                         '차이', '이격률', '손절/익절', '상태', '해석', '차트'
                     ])
                     
-                    # 실시간 테이블 렌더링
+                    # 실시간 테이블 스타일링 (이격률도 색상 적용 가능)
                     result_area.dataframe(
                         df_curr.style.applymap(
                             lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''),
                             subset=['상태']
                         ).applymap(
                             lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''),
-                            subset=['등락률']
+                            subset=['등락률', '이격률']
                         ),
                         use_container_width=True,
                         column_config={"차트": st.column_config.LinkColumn("차트", display_text="열기")},
@@ -169,7 +164,7 @@ if st.sidebar.button("분석 시작"):
             st.success("✅ 모든 분석이 완료되었습니다!")
             st.session_state['final_df'] = df_curr
 
-# --- Outlook 연동 버튼 ---
+# --- Outlook 버튼 ---
 if 'final_df' in st.session_state:
     st.markdown("---")
     st.subheader("📬 결과를 이메일로 보내기")
@@ -178,21 +173,12 @@ if 'final_df' in st.session_state:
     
     email_text = f"📊 주식 분석 결과 ({datetime.now().strftime('%m-%d %H:%M')})\n\n"
     if not buys.empty:
-        email_text += "[오늘의 주요 매수 종목 리스트]\n"
+        email_text += "[매수 신호 종목]\n"
         for _, r in buys.iterrows():
-            email_text += f"- {r['종목명']}: {r['현재가']}원 (이격:{r['이격률']}%) - {r['해석']}\n"
-    else:
-        email_text += "특이 매수 종목이 없습니다.\n"
+            email_text += f"- {r['종목명']}: {r['현재가']}원 (이격:{r['이격률']}) - {r['해석']}\n"
     
-    subject = urllib.parse.quote(f"주식 분석 보고서_{datetime.now().strftime('%m%d')}")
+    subject = urllib.parse.quote(f"주식 리포트_{datetime.now().strftime('%m%d')}")
     body = urllib.parse.quote(email_text)
-    mailto_url = f"mailto:?subject={subject}&body={body}"
-    
-    st.markdown(f"""
-        <a href="{mailto_url}" target="_self" style="text-decoration: none;">
-            <div style="background-color: #0078d4; color: white; padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; cursor: pointer;">
-                📧 Outlook 앱으로 요약 결과 전송
-            </div>
-        </a>
-    """, unsafe_allow_html=True)
+    st.markdown(f'<a href="mailto:?subject={subject}&body={body}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 Outlook으로 요약 전송</div></a>', unsafe_allow_html=True)
+
 
