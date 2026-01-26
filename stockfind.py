@@ -18,7 +18,7 @@ def get_headers():
         'Referer': 'https://finance.naver.com/'
     }
 
-# --- 데이터 수집 및 분석 로직 (변동 없음) ---
+# --- 데이터 수집 및 분석 로직 ---
 def get_market_sum_pages(page_list, market="KOSPI"):
     sosok = 0 if market == "KOSPI" else 1
     codes, names, changes = [], [], []
@@ -114,22 +114,16 @@ def analyze_stock(code, name, current_change):
         return [code, name, current_change, int(price), int(ma20), disparity_fmt, status, f"{trend} | {accel}", chart_url]
     except: return None
 
-# --- UI 스타일링 (색상 로직 수정됨) ---
+# --- UI 스타일링 ---
 def show_styled_dataframe(dataframe):
-    if dataframe.empty:
-        st.info("해당 조건에 맞는 종목이 없습니다.")
+    if dataframe is None or dataframe.empty:
+        st.info("조건에 맞는 종목이 없거나 분석 전입니다.")
         return
 
     def color_status(val):
-        # 1. 매수 (빨강)
-        if any(k in val for k in ['매수', '적극']):
-            return 'color: #ef5350; font-weight: bold'
-        # 2. 주의/경계 (주황) - 사용자 피드백 반영
-        elif any(k in val for k in ['과열', '홀드(주의)']):
-            return 'color: #ffa726; font-weight: bold'
-        # 3. 이탈/매도 (파랑)
-        elif any(k in val for k in ['매도', '이탈']):
-            return 'color: #42a5f5; font-weight: bold'
+        if any(k in str(val) for k in ['매수', '적극']): return 'color: #ef5350; font-weight: bold'
+        if any(k in str(val) for k in ['과열', '주의']): return 'color: #ffa726; font-weight: bold'
+        if any(k in str(val) for k in ['매도', '이탈']): return 'color: #42a5f5; font-weight: bold'
         return ''
 
     st.dataframe(
@@ -140,7 +134,7 @@ def show_styled_dataframe(dataframe):
         hide_index=True
     )
 
-# --- 메인 UI (변동 없음) ---
+# --- 메인 UI ---
 st.title("🛡️ 20일선 스마트 데이터 스캐너")
 
 st.sidebar.header("설정")
@@ -154,6 +148,11 @@ total_metric = c1.empty()
 buy_metric = c2.empty()
 sell_metric = c3.empty()
 
+total_metric.metric("전체 종목", "0개")
+buy_metric.metric("매수 신호", "0개")
+sell_metric.metric("매도/주의", "0개")
+
+# 필터 상태 관리
 BUY_STATUS = ["매수", "적극 매수", "추가 매수 가능", "매수 관심"]
 SELL_STATUS = ["매도", "적극 매도", "추세 이탈", "과열 주의", "홀드(주의)"]
 
@@ -168,6 +167,7 @@ result_title = st.empty()
 result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter})")
 main_result_area = st.empty()
 
+# 1. 분석 시작 버튼 클릭 시
 if start_btn:
     market_df = get_market_sum_pages(selected_pages, market)
     if not market_df.empty:
@@ -179,23 +179,20 @@ if start_btn:
                 results.append(res)
                 cols = ['코드', '종목명', '등락률', '현재가', '20MA', '이격률', '상태', '해석', '차트']
                 df_all = pd.DataFrame(results, columns=cols)
-                st.session_state['df_all'] = df_all
+                st.session_state['df_all'] = df_all # 세션에 저장
                 
+                # 메트릭 업데이트
                 total_metric.metric("전체 종목", f"{len(df_all)}개")
                 buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('|'.join(BUY_STATUS))])}개")
                 sell_metric.metric("매도/주의", f"{len(df_all[df_all['상태'].str.contains('|'.join(SELL_STATUS))])}개")
                 
+                # 실시간 화면 표시
                 with main_result_area:
-                    df_to_show = df_all
-                    if st.session_state.filter == "매수":
-                        df_to_show = df_all[df_all['상태'].str.contains('|'.join(BUY_STATUS))]
-                    elif st.session_state.filter == "매도":
-                        df_to_show = df_all[df_all['상태'].str.contains('|'.join(SELL_STATUS))]
-                    show_styled_dataframe(df_to_show)
-
+                    show_styled_dataframe(df_all)
             progress_bar.progress((i + 1) / len(market_df))
         st.success("✅ 분석 완료!")
 
+# 2. 분석 완료 후 필터링 적용 (버튼 클릭 대응)
 if 'df_all' in st.session_state:
     df = st.session_state['df_all']
     display_df = df.copy()
@@ -207,6 +204,7 @@ if 'df_all' in st.session_state:
     with main_result_area:
         show_styled_dataframe(display_df)
 
+    # Outlook 섹션
     email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
     encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
     mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
