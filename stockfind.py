@@ -75,7 +75,11 @@ def analyze_stock(code, name, current_change):
         prev = df.iloc[-2]
         prev2 = df.iloc[-3]
         
-        # 데이터 추출
+        # 최근 5일 데이터 (추세 확인용)
+        last_5_days = df.iloc[-5:]
+        # 5일 내내 종가가 20일선 위에 있었는지 체크
+        is_above_5d = (last_5_days['종가'] > last_5_days['20MA']).all()
+        
         price, ma20 = last['종가'], last['20MA']
         m_curr, m_prev, m_prev2 = last['MACD_hist'], prev['MACD_hist'], prev2['MACD_hist']
         vol_ratio = (last['거래량'] / last['V_MA5']) if last['V_MA5'] > 0 else 1
@@ -84,22 +88,29 @@ def analyze_stock(code, name, current_change):
         
         status, trend = "관망", "🌊 방향 탐색 중"
         
-        # 🟢 매수 및 유지 로직
-        if price > ma20 and m_curr > m_prev:
-            if vol_pct >= 100: status, trend = "강력 매수", "🚀 압도적 수급 + 추세 강화"
-            elif 20 <= vol_pct < 100: status, trend = "적극 매수", "🔥 수급 동반 우상향"
-            else: status, trend = "안전 매수", "✅ 추세 유지 및 점진적 상승"
+        # 1. 주가가 20일선 위에 있는 경우
+        if price > ma20:
+            # 강력 매도 (MACD 플러스에서 마이너스로 확정 전환 시에만)
+            if m_prev > 0 and m_curr <= 0:
+                status, trend = "강력 매도", "🚨 에너지 데드크로스 발생 (추세 반전)"
             
-        # 🟡 매도 관심 (0 위에서 2일 이상 하락 + 물량 감소)
-        elif m_curr > 0 and (m_curr < m_prev < m_prev2):
-            if vol_pct < 0: status, trend = "매도 관심", "⚠️ 탄력 둔화 (에너지 2일 하락 + 물량 실종)"
-            else: status, trend = "보유 경계", "📉 고점 부근 에너지 감속 중"
+            # [사용자 피드백 반영] 에너지가 2일 하락하더라도 5일간 추세선 위라면 '홀드'
+            elif m_curr > 0 and (m_curr < m_prev < m_prev2):
+                if is_above_5d:
+                    status, trend = "홀드", "📈 에너지는 쉬어가나 추세선 위 안착 중"
+                else:
+                    status, trend = "매도 관심", "⚠️ 추세 불안정 + 에너지 둔화"
             
-        # 🔴 강력 매도 (MACD 플러스에서 마이너스로 전환 확정)
-        if m_prev > 0 and m_curr <= 0:
-            status, trend = "강력 매도", "🚨 에너지 데드크로스 발생 (추세 반전)"
+            # 매수 신호 (수급 중심)
+            elif m_curr > m_prev:
+                if vol_pct >= 100: status, trend = "강력 매수", "🚀 압도적 수급 + 추세 강화"
+                elif 20 <= vol_pct < 100: status, trend = "적극 매수", "🔥 수급 동반 우상향"
+                else: status, trend = "안전 매수", "✅ 추세 유지 및 점진적 상승"
             
-        # 🔵 하락 추세 및 바닥 반등
+            else:
+                status, trend = "홀드", "📈 안정적 흐름 유지"
+
+        # 2. 주가가 20일선 아래에 있는 경우
         elif price < ma20:
             if m_curr < m_prev: status, trend = "하락 가속", "🧊 하락 추세 진행 (신규 진입 금지)"
             elif m_curr > m_prev: status, trend = "회복 기대", "🌅 바닥권 에너지 반전 시도"
@@ -174,3 +185,4 @@ if 'df_all' in st.session_state:
     elif st.session_state.filter == "관심": display_df = df[df['상태'].str.contains("관심|경계")]
     elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("강력 매도")]
     with main_area: show_styled_dataframe(display_df)
+
