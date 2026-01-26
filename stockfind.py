@@ -67,14 +67,12 @@ def analyze_stock(code, name, current_change):
         df = get_price_data(code)
         if df.empty or len(df) < 40: return None
         
-        # 지표 계산
         df['20MA'] = df['종가'].rolling(20).mean()
         df['5MA'] = df['종가'].rolling(5).mean()
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
         
-        # 오늘, 어제, 그저께 데이터
         last = df.iloc[-1]
         prev = df.iloc[-2]
         prev2 = df.iloc[-3]
@@ -85,7 +83,6 @@ def analyze_stock(code, name, current_change):
         disparity = ((price / ma20) - 1) * 100
         disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
 
-        # --- 추세 정밀 진단 로직 ---
         is_energy_fading = macd_curr < macd_prev < macd_prev2
         status, trend = "관망", "🌊 방향 탐색"
 
@@ -111,17 +108,17 @@ def analyze_stock(code, name, current_change):
             else:
                 status, trend = "관망", "🌅 바닥 다지기"
 
-        chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
+        # [복구] 차트 전용 링크로 변경
+        chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
         accel = "📈 가속" if macd_curr > macd_prev else "⚠️ 감속"
         
-        # [수정] '차이' 항목 제거 후 리턴 (총 9개 컬럼)
         return [code, name, current_change, int(price), int(ma20), disparity_fmt, status, f"{trend} | {accel}", chart_url]
     except: return None
 
 # --- UI 스타일링 ---
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
-        st.info("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
+        st.info("해당 조건에 맞는 종목이 없습니다.")
         return
     st.dataframe(
         dataframe.style.applymap(lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if any(k in str(x) for k in ['매도', '이탈', '주의']) else ''), subset=['상태'])
@@ -145,9 +142,9 @@ total_metric = c1.empty()
 buy_metric = c2.empty()
 sell_metric = c3.empty()
 
-total_metric.metric("전체 종목", "0개")
-buy_metric.metric("매수 신호", "0개")
-sell_metric.metric("매도 신호", "0개")
+# 필터 버튼 로직 (그룹화)
+BUY_STATUS = ["매수", "적극 매수", "추가 매수 가능", "매수 관심"]
+SELL_STATUS = ["매도", "적극 매도", "추세 이탈", "과열 주의", "홀드(주의)"]
 
 col1, col2, col3 = st.columns(3)
 if 'filter' not in st.session_state: st.session_state.filter = "전체"
@@ -169,25 +166,32 @@ if start_btn:
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
             if res:
                 results.append(res)
-                # [수정] 컬럼명 리스트에서 '차이' 제거
                 cols = ['코드', '종목명', '등락률', '현재가', '20MA', '이격률', '상태', '해석', '차트']
                 df_all = pd.DataFrame(results, columns=cols)
                 st.session_state['df_all'] = df_all
                 
                 total_metric.metric("전체 종목", f"{len(df_all)}개")
-                buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
-                sell_metric.metric("매도 신호", f"{len(df_all[df_all['상태'].str.contains('매도|이탈|주의')])}개")
+                buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('|'.join(BUY_STATUS))])}개")
+                sell_metric.metric("매도/주의", f"{len(df_all[df_all['상태'].str.contains('|'.join(SELL_STATUS))])}개")
                 
                 with main_result_area:
-                    show_styled_dataframe(df_all)
+                    df_to_show = df_all
+                    if st.session_state.filter == "매수":
+                        df_to_show = df_all[df_all['상태'].str.contains('|'.join(BUY_STATUS))]
+                    elif st.session_state.filter == "매도":
+                        df_to_show = df_all[df_all['상태'].str.contains('|'.join(SELL_STATUS))]
+                    show_styled_dataframe(df_to_show)
+
             progress_bar.progress((i + 1) / len(market_df))
         st.success("✅ 분석 완료!")
 
 if 'df_all' in st.session_state:
     df = st.session_state['df_all']
     display_df = df.copy()
-    if st.session_state.filter == "매수": display_df = df[df['상태'].str.contains("매수")]
-    elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("매도|이탈|주의")]
+    if st.session_state.filter == "매수":
+        display_df = df[df['상태'].str.contains('|'.join(BUY_STATUS))]
+    elif st.session_state.filter == "매도":
+        display_df = df[df['상태'].str.contains('|'.join(SELL_STATUS))]
     
     with main_result_area:
         show_styled_dataframe(display_df)
@@ -199,5 +203,6 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
 
