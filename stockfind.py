@@ -18,7 +18,7 @@ def get_headers():
         'Referer': 'https://finance.naver.com/'
     }
 
-# --- 데이터 수집 및 분석 로직 ---
+# --- 데이터 수집 및 분석 로직 (변동 없음) ---
 def get_market_sum_pages(page_list, market="KOSPI"):
     sosok = 0 if market == "KOSPI" else 1
     codes, names, changes = [], [], []
@@ -108,27 +108,39 @@ def analyze_stock(code, name, current_change):
             else:
                 status, trend = "관망", "🌅 바닥 다지기"
 
-        # [복구] 차트 전용 링크로 변경
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
         accel = "📈 가속" if macd_curr > macd_prev else "⚠️ 감속"
         
         return [code, name, current_change, int(price), int(ma20), disparity_fmt, status, f"{trend} | {accel}", chart_url]
     except: return None
 
-# --- UI 스타일링 ---
+# --- UI 스타일링 (색상 로직 수정됨) ---
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.info("해당 조건에 맞는 종목이 없습니다.")
         return
+
+    def color_status(val):
+        # 1. 매수 (빨강)
+        if any(k in val for k in ['매수', '적극']):
+            return 'color: #ef5350; font-weight: bold'
+        # 2. 주의/경계 (주황) - 사용자 피드백 반영
+        elif any(k in val for k in ['과열', '홀드(주의)']):
+            return 'color: #ffa726; font-weight: bold'
+        # 3. 이탈/매도 (파랑)
+        elif any(k in val for k in ['매도', '이탈']):
+            return 'color: #42a5f5; font-weight: bold'
+        return ''
+
     st.dataframe(
-        dataframe.style.applymap(lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if any(k in str(x) for k in ['매도', '이탈', '주의']) else ''), subset=['상태'])
+        dataframe.style.applymap(color_status, subset=['상태'])
         .applymap(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등락률', '이격률']),
         use_container_width=True,
         column_config={"차트": st.column_config.LinkColumn("차트", display_text="열기"), "코드": st.column_config.TextColumn("코드", width="small")},
         hide_index=True
     )
 
-# --- 메인 UI ---
+# --- 메인 UI (변동 없음) ---
 st.title("🛡️ 20일선 스마트 데이터 스캐너")
 
 st.sidebar.header("설정")
@@ -142,7 +154,6 @@ total_metric = c1.empty()
 buy_metric = c2.empty()
 sell_metric = c3.empty()
 
-# 필터 버튼 로직 (그룹화)
 BUY_STATUS = ["매수", "적극 매수", "추가 매수 가능", "매수 관심"]
 SELL_STATUS = ["매도", "적극 매도", "추세 이탈", "과열 주의", "홀드(주의)"]
 
@@ -150,7 +161,7 @@ col1, col2, col3 = st.columns(3)
 if 'filter' not in st.session_state: st.session_state.filter = "전체"
 if col1.button("🔄 전체 보기", use_container_width=True): st.session_state.filter = "전체"
 if col2.button("🔴 매수 관련만", use_container_width=True): st.session_state.filter = "매수"
-if col3.button("🔵 매도 관련만", use_container_width=True): st.session_state.filter = "매도"
+if col3.button("🔵 매도/주의 관련만", use_container_width=True): st.session_state.filter = "매도"
 
 st.markdown("---")
 result_title = st.empty()
@@ -203,6 +214,4 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
-
-
 
