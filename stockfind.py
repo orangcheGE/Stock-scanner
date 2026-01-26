@@ -65,28 +65,69 @@ def get_price_data(code, max_pages=15):
 def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
-        if df is None or len(df) < 40: return None
+        if df.empty or len(df) < 40: return None
+        
+        # 기본 지표 계산
         df['20MA'] = df['종가'].rolling(20).mean()
+        df['5MA'] = df['종가'].rolling(5).mean()
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
+        
+        # ATR 계산 (손절/익절가용)
         df['tr'] = np.maximum(df['고가'] - df['저가'], np.maximum(abs(df['고가'] - df['종가'].shift(1)), abs(df['저가'] - df['종가'].shift(1))))
         df['ATR'] = df['tr'].rolling(14).mean()
-        last, prev = df.iloc[-1], df.iloc[-2]
-        price, ma20, macd_last, macd_prev = last['종가'], last['20MA'], last['MACD_hist'], prev['MACD_hist']
-        diff, disparity = price - ma20, ((price / ma20) - 1) * 100
+        
+        # 데이터 추출 (오늘, 어제, 그저께)
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        prev2 = df.iloc[-3]
+        
+        price, ma20, ma5 = last['종가'], last['20MA'], last['5MA']
+        macd_curr, macd_prev, macd_prev2 = last['MACD_hist'], prev['MACD_hist'], prev2['MACD_hist']
+        
+        diff = int(price - ma20)
+        disparity = ((price / ma20) - 1) * 100
         disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
         sl_tp = f"{int(price - last['ATR']*2)} / {int(price + last['ATR']*2)}" if pd.notna(last['ATR']) else "- / -"
 
-        if price > ma20 and macd_last > 0:
-            status, trend = ("추가 매수 가능", "🚀 상승세 안정적 (추가 여력)") if 0 <= disparity <= 3 else ("홀드", "📈 상승 추세 유지")
-        elif (prev['종가'] < prev['20MA']) and (price > ma20): status, trend = "적극 매수", "🔥 엔진 점화"
-        elif abs(price - ma20)/ma20 < 0.03 and macd_last > 0: status, trend = "매수 관심", "⚓ 반등 준비"
-        elif price < ma20 and macd_last < macd_prev: status, trend = "적극 매도", "🧊 추세 하락"
-        else: status, trend = "관망", "🌊 방향 탐색"
+        # --- [정밀 수정] 사용자 요청 추세 분석 로직 ---
+        
+        # 1. MACD 에너지 방향성 (감소 추세 확인)
+        is_energy_fading = macd_curr < macd_prev < macd_prev2
+        
+        # 2. 상태 판정
+        if disparity >= 12:  # 1차 과열 필터
+            status, trend = "과열 주의", "🔥 이격 과다 (추격 금지)"
+            
+        elif price > ma20:  # 20일선 위 (큰 흐름은 상승)
+            if price < ma5: # [추가] 5일 평균선 이탈 시
+                status, trend = "추세 이탈", "⚠️ 5일선 하회 (단기 탄력 상실)"
+            elif macd_curr > 0: # MACD가 붉은색 영역(양수)일 때
+                if is_energy_fading: # [추가] 양수지만 2일 이상 감소 시
+                    status, trend = "홀드(주의)", "📉 에너지 감소 (파란색 전환 징후)"
+                elif 0 <= disparity <= 3:
+                    status, trend = "적극 매수", "🚀 이평선 근접 + 에너지 가속"
+                else:
+                    status, trend = "홀드", "📈 상승 추세 유지"
+            else: # MACD가 이미 음수라면
+                status, trend = "관망", "🌊 하락 압력 존재"
+                
+        elif (prev['종가'] < prev['20MA']) and (price > ma20): # 돌파 시점
+            status, trend = "매수 관심", "🔥 20일선 상향 돌파"
+            
+        elif price < ma20: # 20일선 아래
+            if is_energy_fading:
+                status, trend = "적극 매도", "🧊 하락 가속화"
+            else:
+                status, trend = "관망", "🌅 바닥 다지기 중"
+        else:
+            status, trend = "관망", "🌊 방향 탐색"
 
         chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
-        return [code, name, current_change, int(price), int(ma20), int(diff), disparity_fmt, sl_tp, status, f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}", chart_url]
+        accel = "📈 가속" if macd_curr > macd_prev else "⚠️ 감속"
+        
+        return [code, name, current_change, int(price), int(ma20), diff, disparity_fmt, sl_tp, status, f"{trend} | {accel}", chart_url]
     except: return None
 
 def show_styled_dataframe(dataframe):
@@ -182,3 +223,4 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
