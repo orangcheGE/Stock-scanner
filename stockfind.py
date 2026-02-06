@@ -62,14 +62,6 @@ def get_price_data(code, max_pages=15):
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
-import numpy as np
-import pandas as pd
-
-# get_price_data 함수는 이미 구현되어 있다고 가정합니다.
-# def get_price_data(code):
-#     # ... 주가 데이터를 DataFrame으로 반환하는 로직 ...
-#     return df
-
 def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
@@ -224,5 +216,6 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
 
