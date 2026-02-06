@@ -165,66 +165,71 @@ def show_styled_dataframe(dataframe):
         hide_index=True
     )
 
-# -------------------------
-# UI 부분 (상시 노출 레이아웃)
-# -------------------------
 st.title("🛡️ 20일선 스마트 데이터 스캐너")
 
-# 사이드바 설정
+# --- 사이드바 UI ---
 st.sidebar.header("설정")
 market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
 selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
 start_btn = st.sidebar.button("🚀 분석 시작")
 
-# --- 메인 화면: 버튼 및 요약 섹션 (상시 노출) ---
+# --- 메인 화면 상단 UI ---
 st.subheader("📊 진단 및 필터링")
 c1, c2, c3 = st.columns(3)
 total_metric = c1.empty()
 buy_metric = c2.empty()
 sell_metric = c3.empty()
 
-# 기본 메트릭 초기값
-total_metric.metric("전체 종목", "0개")
-buy_metric.metric("매수 신호", "0개")
-sell_metric.metric("매도 신호", "0개")
+# 필터 상태를 session_state로 관리합니다.
+if 'filter' not in st.session_state:
+    st.session_state.filter = "전체"
 
+# 필터 버튼을 누르면 session_state 값만 바꾸고 스크립트가 재실행됩니다.
 col1, col2, col3 = st.columns(3)
-if 'filter' not in st.session_state: st.session_state.filter = "전체"
-btn_all = col1.button("🔄 전체 보기", use_container_width=True)
-btn_buy = col2.button("🔴 매수 관련만", use_container_width=True)
-btn_sell = col3.button("🔵 매도 관련만", use_container_width=True)
+if col1.button("🔄 전체 보기", use_container_width=True):
+    st.session_state.filter = "전체"
+    st.rerun() # 버튼 클릭 시 즉시 재실행하여 필터 적용
+if col2.button("🔴 매수 관련만", use_container_width=True):
+    st.session_state.filter = "매수"
+    st.rerun()
+if col3.button("🔵 매도 관련만", use_container_width=True):
+    st.session_state.filter = "매도"
 
-if btn_all: st.session_state.filter = "전체"
-if btn_buy: st.session_state.filter = "매수"
-if btn_sell: st.session_state.filter = "매도"
-
-# 실시간 분석 결과가 나타날 공간
+# --- 결과가 표시될 모든 영역을 하나의 큰 placeholder로 지정 ---
 st.markdown("---")
-result_title = st.empty()
-result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter})")
-main_result_area = st.empty()
+result_area = st.empty()
 
-# '분석 시작' 버튼을 눌렀을 때의 동작
+
+# ==============================================================================
+# 로직 실행 파트
+# ==============================================================================
+
+# 1. '분석 시작' 버튼을 눌렀을 때 실행되는 로직
 if start_btn:
-    # 필터 상태를 '전체'로 초기화하고, 이전 분석 결과가 있다면 삭제합니다.
+    # 분석 시작 시, 이전 결과 삭제 및 필터 초기화
     st.session_state.filter = "전체"
     if 'df_all' in st.session_state:
         del st.session_state['df_all']
 
     market_df = get_market_sum_pages(selected_pages, market)
+    
     if not market_df.empty:
         results = []
         progress_bar = st.progress(0, text="분석 준비 중...")
+        
+        # 메트릭 초기화
+        total_metric.metric("전체 종목", "0개")
+        buy_metric.metric("매수 신호", "0개")
+        sell_metric.metric("매도 신호", "0개")
 
+        # for 루프를 돌면서 실시간으로 UI를 업데이트합니다.
         for i, (idx, row) in enumerate(market_df.iterrows()):
-            # 진행률 텍스트 업데이트
             progress_bar.progress((i + 1) / len(market_df), text=f"분석 중: {row['종목명']} ({i+1}/{len(market_df)})")
-            
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
             
             if res:
                 results.append(res)
-                # 데이터프레임을 매번 새로 만들어서 실시간으로 표시
+                # 매번 데이터프레임을 새로 만듭니다.
                 df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '해석', '차트'])
                 st.session_state['df_all'] = df_all
 
@@ -233,15 +238,19 @@ if start_btn:
                 buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
                 sell_metric.metric("매도 신호", f"{len(df_all[df_all['상태'].str.contains('매도')])}개")
 
-                # 실시간 테이블 업데이트
-                with main_result_area.container():
-                    result_title.subheader(f"🔍 실시간 분석 결과 ({len(df_all)}개)")
+                # ✨ 핵심: st.empty()로 만든 result_area의 내용을 통째로 새로 그립니다.
+                # 이렇게 하면 for문이 도는 중에도 화면이 업데이트됩니다.
+                with result_area.container():
+                    st.subheader(f"🔍 실시간 분석 결과 ({len(df_all)}개)")
                     show_styled_dataframe(df_all)
         
         progress_bar.empty() # 진행률 바 숨기기
         st.success("✅ 분석 완료!")
+        # 분석이 모두 끝나면, Outlook 버튼까지 포함된 최종 화면을 그리기 위해 페이지를 한번 재실행합니다.
+        time.sleep(1) # 완료 메시지를 1초간 보여줌
+        st.rerun() 
 
-# '분석 시작'이 아닐 때 (페이지 새로고침, 필터 버튼 클릭 등)
+# 2. 분석이 끝난 후 또는 필터 버튼을 눌렀을 때 실행되는 로직
 elif 'df_all' in st.session_state and not st.session_state.df_all.empty:
     df = st.session_state['df_all']
     display_df = df.copy()
@@ -251,20 +260,29 @@ elif 'df_all' in st.session_state and not st.session_state.df_all.empty:
         display_df = df[df['상태'].str.contains("매수")]
     elif st.session_state.filter == "매도":
         display_df = df[df['상태'].str.contains("매도")]
-    
-    result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / 총 {len(display_df)}개)")
 
-    with main_result_area.container():
+    # 메트릭 업데이트 (필터링된 상태가 아닌 전체 기준으로)
+    total_metric.metric("전체 종목", f"{len(df)}개")
+    buy_metric.metric("매수 신호", f"{len(df[df['상태'].str.contains('매수')])}개")
+    sell_metric.metric("매도 신호", f"{len(df[df['상태'].str.contains('매도')])}개")
+
+    # result_area 컨테이너에 필터링된 최종 결과를 그립니다.
+    with result_area.container():
+        st.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / 총 {len(display_df)}개)")
         show_styled_dataframe(display_df)
-    
-    # Outlook 전송 버튼은 데이터가 있을 때 항상 보이도록 이 위치에 둡니다.
-    email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
-    encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
-    mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
-    st.markdown(f'<a href="{mailto_url}" target="\_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
+        
+        # Outlook 전송 버튼 추가
+        email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
+        encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
+        mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
+        st.markdown(f'<a href="{mailto_url}" target="\_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
 
-# 가장 처음, 아무 데이터도 없을 때 초기 메시지를 표시합니다.
+# 3. 앱을 맨 처음 실행했을 때 (아무 데이터도 없을 때)
 else:
-    with main_result_area.container():
+    with result_area.container():
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+    # 초기 메트릭
+    total_metric.metric("전체 종목", "0개")
+    buy_metric.metric("매수 신호", "0개")
+    sell_metric.metric("매도 신호", "0개")
 
