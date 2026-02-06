@@ -214,27 +214,39 @@ main_result_area = st.empty()
 
 # 분석 실행 로직
 if start_btn:
+    # 1. 빈 데이터프레임을 먼저 생성하여 화면에 보여줄 준비
+    st.session_state['df_all'] = pd.DataFrame(columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '트렌드 신호', '차트'])
+    
     market_df = get_market_sum_pages(selected_pages, market)
     if not market_df.empty:
-        results = []
         progress_bar = st.progress(0)
+        
+        # 반복문 시작
         for i, (idx, row) in enumerate(market_df.iterrows()):
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
+            
             if res:
-                results.append(res)
-
-                # ★★★ 2. 컬럼 이름을 '트렌드 신호'로 변경 ★★★
-                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '트렌드 신호', '차트'])
-                st.session_state['df_all'] = df_all
+                # 2. 분석된 한 줄을 데이터프레임으로 만들어 기존 DF에 추가
+                new_row_df = pd.DataFrame([res], columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '트렌드 신호', '차트'])
+                st.session_state['df_all'] = pd.concat([st.session_state['df_all'], new_row_df], ignore_index=True)
                 
-                total_metric.metric("전체 종목", f"{len(df_all)}개")
-                buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
-                sell_metric.metric("매도 신호", f"{len(df_all[df_all['상태'].str.contains('매도')])}개")
+                # 업데이트된 전체 DF를 가져옴
+                df_all_updated = st.session_state['df_all']
                 
+                # 3. 메트릭 및 테이블 실시간 업데이트
+                total_metric.metric("전체 종목", f"{len(df_all_updated)}개")
+                buy_metric.metric("매수 신호", f"{len(df_all_updated[df_all_updated['상태'].str.contains('매수')])}개")
+                sell_metric.metric("매도 신호", f"{len(df_all_updated[df_all_updated['상태'].str.contains('매도')])}개")
+                
+                # 화면에 즉시 표시
                 with main_result_area:
-                    show_styled_dataframe(df_all)
+                    show_styled_dataframe(df_all_updated)
+            
+            # 진행률 업데이트
             progress_bar.progress((i + 1) / len(market_df))
+            
         st.success("✅ 분석 완료!")
+
 
 # 분석 후 필터링 적용 출력
 if 'df_all' in st.session_state:
@@ -254,6 +266,7 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
 
 
