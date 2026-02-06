@@ -236,7 +236,7 @@ if start_btn:
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
             if res:
                 results.append(res)
-                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '해석', '차트'])
+                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '이격률', '상태', '해석', '차트'])
                 st.session_state['df_all'] = df_all
                 
                 # 메트릭 업데이트
@@ -268,6 +268,7 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
 
 
