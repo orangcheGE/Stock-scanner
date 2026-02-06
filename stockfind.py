@@ -60,7 +60,7 @@ def get_price_data(code, max_pages=15):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',',''), errors='coerce')
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
-    return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)DK
+    return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
 def analyze_stock(code, name, current_change):
     try:
@@ -237,3 +237,4 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
