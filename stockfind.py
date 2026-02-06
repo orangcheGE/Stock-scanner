@@ -67,7 +67,7 @@ def analyze_stock(code, name, current_change):
         df = get_price_data(code)
         if df is None or len(df) < 40: return None
 
-        # --- CCI 계산 로직 ---
+        # --- 보조지표 계산 ---
         df['TP'] = (df['고가'] + df['저가'] + df['종가']) / 3
         df['SMA_TP'] = df['TP'].rolling(20).mean()
         mean_dev = df['TP'].rolling(20).apply(lambda x: (x - x.mean()).abs().mean(), raw=True)
@@ -86,39 +86,61 @@ def analyze_stock(code, name, current_change):
 
         price, ma20, macd_last, macd_prev = last['종가'], last['20MA'], last['MACD_hist'], prev['MACD_hist']
 
-        # --- CCI 신호 확인 로직 ---
-        cci_window = df.tail(5)
-        cci_buy_signal = any(
-            ((cci_window['CCI'].shift(1) < threshold) & (cci_window['CCI'] >= threshold)).any()
-            for threshold in [-100, 50, 100]
-        )
-        cci_sell_signal = any(
-            ((cci_window['CCI'].shift(1) > threshold) & (cci_window['CCI'] <= threshold)).any()
-            for threshold in [100, 50]
-        )
-
-        # <<-- MACD 매수/매도 조건 확장 -->>
-        macd_buy_condition = (macd_last > 0) or (macd_last > macd_prev and macd_prev < 0)
-        macd_sell_condition = (macd_last < 0) or (macd_last < macd_prev and macd_prev > 0)
-
         diff, disparity = price - ma20, ((price / ma20) - 1) * 100
         disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
         sl_tp = f"{int(price - last['ATR']*2)} / {int(price + last['ATR']*2)}" if pd.notna(last['ATR']) else "- / -"
+        
+        status = "관망 (신호 대기)" # 기본 상태
+        trend = "🌊 횡보 또는 신호 대기"
 
-        # --- 상태 및 트렌드 판단 로직 (확장된 MACD 조건 적용) ---
-        if price > ma20 and macd_last > 0:
-            status, trend = ("추가 매수 가능", "🚀 상승세 안정적 (추가 여력)") if 0 <= disparity <= 3 else ("홀드", "📈 상승 추세 유지")
-        elif (prev['종가'] < prev['20MA']) and (price > ma20):
-            status, trend = "적극 매수", "🔥 엔진 점화"
-        elif (abs(price - ma20) / ma20 < 0.03) and macd_buy_condition and cci_buy_signal:
-            status, trend = "매수 관심", f"⚓ 반등 준비 {'(MACD 전환)' if macd_last < 0 else ''}(CCI 동시 충족)"
-        elif (price < ma20) and macd_sell_condition and cci_sell_signal:
-            status, trend = "적극 매도", f"🧊 추세 하락 {'(MACD 전환)' if macd_last > 0 else ''}(CCI 동시 충족)"
-        else:
-            status, trend = "관망", "🌊 방향 탐색"
+        # --- 신호 판단 및 상태값 동적 생성 ---
+        # 1. '추세 전환 매수' 또는 '눌림목/과열'
+        if price > ma20:
+            if (prev['종가'] < prev['20MA']):
+                status, trend = "20일선 상향 돌파", "🔥 추세 전환 시도"
+            elif macd_last > 0 and 0 <= disparity <= 3:
+                status, trend = "눌림목 매수 (20일선 지지)", "🚀 상승 중 건강한 조정"
+            elif macd_last > 0 and disparity > 3:
+                status, trend = "상승 과열 주의", "📈 보유자의 영역"
 
+        # 2. '변곡점 매수' 신호 조합
+        cci_window = df.tail(5)
+        is_near_ma20 = abs(price - ma20) / ma20 < 0.03
+        macd_buy_turn = macd_last > macd_prev and macd_prev < 0
+
+        if is_near_ma20 and (macd_last > 0 or macd_buy_turn):
+            reasons = ["20일선 근접"]
+            reasons.append("MACD 음수권 전환" if macd_buy_turn else "MACD 양수권")
+            
+            cci_buy_reasons = []
+            if ((cci_window['CCI'].shift(1) < -100) & (cci_window['CCI'] >= -100)).any(): cci_buy_reasons.append("CCI -100 돌파")
+            if ((cci_window['CCI'].shift(1) < 50) & (cci_window['CCI'] >= 50)).any(): cci_buy_reasons.append("CCI 50 돌파")
+            if ((cci_window['CCI'].shift(1) < 100) & (cci_window['CCI'] >= 100)).any(): cci_buy_reasons.append("CCI 100 돌파")
+            
+            if cci_buy_reasons:
+                reasons.extend(cci_buy_reasons)
+                status = " + ".join(reasons)
+                trend = "⚓ 바닥 신호 포착"
+
+        # 3. '변곡점 매도' 신호 조합
+        macd_sell_turn = macd_last < macd_prev and macd_prev > 0
+        if price < ma20 and (macd_last < 0 or macd_sell_turn):
+            reasons = ["20일선 이탈"]
+            reasons.append("MACD 양수권 전환" if macd_sell_turn else "MACD 음수권")
+
+            cci_sell_reasons = []
+            if ((cci_window['CCI'].shift(1) > 100) & (cci_window['CCI'] <= 100)).any(): cci_sell_reasons.append("CCI 100 이탈")
+            if ((cci_window['CCI'].shift(1) > 50) & (cci_window['CCI'] <= 50)).any(): cci_sell_reasons.append("CCI 50 이탈")
+
+            if cci_sell_reasons:
+                reasons.extend(cci_sell_reasons)
+                status = " + ".join(reasons)
+                trend = "🧊 고점 신호 포착"
+                
+        final_trend = f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}"
+        
         chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
-        return [code, name, current_change, int(price), int(ma20), int(diff), disparity_fmt, sl_tp, status, f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}", chart_url]
+        return [code, name, current_change, int(price), int(ma20), int(diff), disparity_fmt, sl_tp, status, final_trend, chart_url]
 
     except Exception as e:
         return None
@@ -221,6 +243,7 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
 
 
