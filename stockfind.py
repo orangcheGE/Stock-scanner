@@ -64,84 +64,89 @@ def get_price_data(code, max_pages=15):
 
 def analyze_stock(code, name, current_change):
     try:
+        # 데이터가 충분하지 않으면 분석에서 제외
         df = get_price_data(code)
         if df is None or len(df) < 40: return None
 
-        # --- 1. 모든 필요 지표 계산 (5일선 추가) ---
+        # --- 1. 모든 필요 지표 계산 (CCI 추가) ---
         df['5MA'] = df['종가'].rolling(5).mean()
         df['20MA'] = df['종가'].rolling(20).mean()
+        
+        # MACD 계산
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         macd = ema12 - ema26
         signal = macd.ewm(span=9, adjust=False).mean()
         df['MACD_hist'] = macd - signal
-        df['tr'] = np.maximum(df['고가'] - df['저가'], np.maximum(abs(df['고가'] - df['종가'].shift(1)), abs(df['저가'] - df['종가'].shift(1))))
-        df['ATR'] = df['tr'].rolling(14).mean()
+
+        # CCI 계산 (기간: 20일)
+        cci_period = 20
+        df['tp'] = (df['고가'] + df['저가'] + df['종가']) / 3
+        df['sma_tp'] = df['tp'].rolling(cci_period).mean()
+        # .rolling(...).apply(...) 대신 Series 연산으로 Mean Deviation 계산 (성능 개선)
+        df['mean_dev'] = df['tp'].rolling(cci_period).apply(lambda x: pd.Series(x).mad(), raw=True)
+        df['CCI'] = (df['tp'] - df['sma_tp']) / (0.015 * df['mean_dev'])
 
         # --- 2. 최신 데이터 2개 확보 (과거와 현재 비교용) ---
         if len(df) < 2: return None
         last, prev = df.iloc[-1], df.iloc[-2]
 
-        # --- 3. 주요 값들을 변수에 저장하여 가독성 향상 ---
+        # --- 3. 주요 값들을 변수에 저장 ---
         price = last['종가']
-        ma5_last, ma5_prev = last['5MA'], prev['5MA']
         ma20_last, ma20_prev = last['20MA'], prev['20MA']
         macd_hist_last, macd_hist_prev = last['MACD_hist'], prev['MACD_hist']
+        cci_last, cci_prev = last['CCI'], prev['CCI']
 
         # --- 4. 개별 기술적 이벤트 발생 여부 정의 ---
         event_desc = [] # 이벤트 설명을 담을 리스트
         
-        # 이벤트 1: 5일선 상향 돌파
-        is_5ma_breakthrough = prev['종가'] < ma5_prev and price > ma5_last
-        if is_5ma_breakthrough:
-            event_desc.append("5일선 돌파")
-
-        # 이벤트 2: 20일선 상향 돌파
         is_20ma_breakthrough = prev['종가'] < ma20_prev and price > ma20_last
-        if is_20ma_breakthrough:
-            event_desc.append("20일선 돌파")
+        if is_20ma_breakthrough: event_desc.append("20일선 돌파")
 
-        # 이벤트 3: MACD 히스토그램 양수 전환 (골든 크로스)
         is_macd_turn_positive = macd_hist_prev < 0 and macd_hist_last > 0
-        if is_macd_turn_positive:
-            event_desc.append("MACD 양전")
+        if is_macd_turn_positive: event_desc.append("MACD 양전")
+            
+        is_macd_rebounding = macd_hist_last < 0 and macd_hist_last > macd_hist_prev
+        if is_macd_rebounding: event_desc.append("MACD 반등 시도")
 
+        # ✨ CCI 이벤트: 상향 돌파 (매수 신호)
+        if cci_prev < -100 and cci_last > -100: event_desc.append("CCI(-100) 상향돌파")
+        if cci_prev < 0 and cci_last > 0: event_desc.append("CCI(0) 상향돌파")
+
+        # ✨ CCI 이벤트: 하향 이탈 (매도 신호)
+        if cci_prev > 100 and cci_last < 100: event_desc.append("CCI(100) 하향이탈")
+        if cci_prev > 0 and cci_last < 0: event_desc.append("CCI(0) 하향이탈")
+        
+        is_cci_buy_signal = any("상향돌파" in s for s in event_desc)
+        is_cci_sell_signal = any("하향이탈" in s for s in event_desc)
+        
         # --- 5. 조건 조합으로 상태(Status) 및 해석(Trend) 결정 ---
-        status = "관망"  # 기본값
+        status = "관망" # 기본값
         
-        # ✨ 강력 매수 신호: 20일선 돌파 AND MACD 양전 (사용자 요청)
-        if is_20ma_breakthrough and is_macd_turn_positive:
-            status = "강력 매수"
-        
-        # 일반 매수 신호: 20일선만 돌파한 경우
-        elif is_20ma_breakthrough:
-            status = "매수"
-        
-        # 상승 추세 유지: 20일선 위에 있고, MACD도 양수인 경우
+        if is_20ma_breakthrough and is_macd_turn_positive: status = "강력 매수"
+        elif is_20ma_breakthrough: status = "매수"
+        elif is_cci_buy_signal: status = "CCI 매수 관심"
+        elif is_macd_rebounding: status = "매수 관심"
+        elif is_cci_sell_signal: status = "CCI 매도 관심"
+        elif price < ma20_last and macd_hist_last < macd_hist_prev: status = "적극 매도"
         elif price > ma20_last and macd_hist_last > 0:
             status = "상승 추세"
-            if "MACD 양전" not in event_desc: # MACD가 이미 양수인 상태를 명시
+            if not any(e in ["20일선 돌파", "MACD 양전"] for e in event_desc):
                  event_desc.append("20일선 위 & MACD 양수")
-
-        # 매도 신호: 20일선 아래로 내려가고, MACD가 감소하는 경우
-        elif price < ma20_last and macd_hist_last < macd_hist_prev:
-            status = "적극 매도"
-            event_desc.append("20일선 아래 & MACD 감소")
         
-        # 최종 해석: 발생한 이벤트들을 " | "로 묶어서 보여줌
         trend = " | ".join(event_desc) if event_desc else "신호 없음"
 
-        # --- 6. 최종 결과 데이터 생성 ---
-        disparity = ((price / ma20_last) - 1) * 100
+        # --- 6. 최종 결과 데이터 생성 (요청대로 '차이', '손절/익절' 제외) ---
+        disparity = ((price / ma20_last) - 1) * 100 if ma20_last > 0 else 0
         disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
-        sl_tp = f"{int(price - last['ATR']*2)} / {int(price + last['ATR']*2)}" if pd.notna(last['ATR']) else "- / -"
         chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
 
-        return [code, name, current_change, int(price), int(ma20_last), int(price - ma20_last), disparity_fmt, sl_tp, status, trend, chart_url]
+        return [code, name, current_change, int(price), int(ma20_last), disparity_fmt, status, trend, chart_url]
 
     except Exception as e:
-        # print(f"Error analyzing {name}: {e}") # 디버깅 시 오류를 확인하고 싶을 때 주석 해제
+        # print(f"Error analyzing {name}: {e}") # 디버깅 시 오류 확인용
         return None
+
 
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
@@ -236,3 +241,4 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
