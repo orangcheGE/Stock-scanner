@@ -62,33 +62,75 @@ def get_price_data(code, max_pages=15):
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
+import numpy as np
+import pandas as pd
+
+# get_price_data 함수는 이미 구현되어 있다고 가정합니다.
+# def get_price_data(code):
+#     # ... 주가 데이터를 DataFrame으로 반환하는 로직 ...
+#     return df
+
 def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
         if df is None or len(df) < 40: return None
+
+        # --- CCI 계산 로직 ---
+        df['TP'] = (df['고가'] + df['저가'] + df['종가']) / 3
+        df['SMA_TP'] = df['TP'].rolling(20).mean()
+        mean_dev = df['TP'].rolling(20).apply(lambda x: (x - x.mean()).abs().mean(), raw=True)
+        df['CCI'] = (df['TP'] - df['SMA_TP']) / (0.015 * mean_dev)
+        df.dropna(inplace=True)
+
         df['20MA'] = df['종가'].rolling(20).mean()
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
         df['tr'] = np.maximum(df['고가'] - df['저가'], np.maximum(abs(df['고가'] - df['종가'].shift(1)), abs(df['저가'] - df['종가'].shift(1))))
         df['ATR'] = df['tr'].rolling(14).mean()
+
+        if len(df) < 6: return None
         last, prev = df.iloc[-1], df.iloc[-2]
+
         price, ma20, macd_last, macd_prev = last['종가'], last['20MA'], last['MACD_hist'], prev['MACD_hist']
+
+        # --- CCI 신호 확인 로직 ---
+        cci_window = df.tail(5)
+        cci_buy_signal = any(
+            ((cci_window['CCI'].shift(1) < threshold) & (cci_window['CCI'] >= threshold)).any()
+            for threshold in [-100, 50, 100]
+        )
+        cci_sell_signal = any(
+            ((cci_window['CCI'].shift(1) > threshold) & (cci_window['CCI'] <= threshold)).any()
+            for threshold in [100, 50]
+        )
+
+        # <<-- MACD 매수/매도 조건 확장 -->>
+        macd_buy_condition = (macd_last > 0) or (macd_last > macd_prev and macd_prev < 0)
+        macd_sell_condition = (macd_last < 0) or (macd_last < macd_prev and macd_prev > 0)
+
         diff, disparity = price - ma20, ((price / ma20) - 1) * 100
         disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
         sl_tp = f"{int(price - last['ATR']*2)} / {int(price + last['ATR']*2)}" if pd.notna(last['ATR']) else "- / -"
 
+        # --- 상태 및 트렌드 판단 로직 (확장된 MACD 조건 적용) ---
         if price > ma20 and macd_last > 0:
             status, trend = ("추가 매수 가능", "🚀 상승세 안정적 (추가 여력)") if 0 <= disparity <= 3 else ("홀드", "📈 상승 추세 유지")
-        elif (prev['종가'] < prev['20MA']) and (price > ma20): status, trend = "적극 매수", "🔥 엔진 점화"
-        elif abs(price - ma20)/ma20 < 0.03 and macd_last > 0: status, trend = "매수 관심", "⚓ 반등 준비"
-        elif price < ma20 and macd_last < macd_prev: status, trend = "적극 매도", "🧊 추세 하락"
-        else: status, trend = "관망", "🌊 방향 탐색"
+        elif (prev['종가'] < prev['20MA']) and (price > ma20):
+            status, trend = "적극 매수", "🔥 엔진 점화"
+        elif (abs(price - ma20) / ma20 < 0.03) and macd_buy_condition and cci_buy_signal:
+            status, trend = "매수 관심", f"⚓ 반등 준비 {'(MACD 전환)' if macd_last < 0 else ''}(CCI 동시 충족)"
+        elif (price < ma20) and macd_sell_condition and cci_sell_signal:
+            status, trend = "적극 매도", f"🧊 추세 하락 {'(MACD 전환)' if macd_last > 0 else ''}(CCI 동시 충족)"
+        else:
+            status, trend = "관망", "🌊 방향 탐색"
 
-        chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
+        chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
         return [code, name, current_change, int(price), int(ma20), int(diff), disparity_fmt, sl_tp, status, f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}", chart_url]
-    except: return None
 
+    except Exception as e:
+        return None
+        
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
@@ -182,4 +224,5 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
