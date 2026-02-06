@@ -47,7 +47,7 @@ def get_market_sum_pages(page_list, market="KOSPI"):
 def get_price_data(code, max_pages=15):
     url = f"https://finance.naver.com/item/sise_day.naver?code={code}"
     dfs = []
-    for page in range(1, max_pages+1):
+    for page in range(1, max_pages + 1):
         try:
             res = requests.get(f"{url}&page={page}", headers=get_headers())
             df_list = pd.read_html(io.StringIO(res.text), encoding='euc-kr')
@@ -56,11 +56,11 @@ def get_price_data(code, max_pages=15):
     if not dfs: return pd.DataFrame()
     df = pd.concat(dfs, ignore_index=True).dropna(how='all')
     df = df.rename(columns=lambda x: x.strip())
-    for col in ['종가','고가','저가','거래량']:
+    for col in ['종가', '고가', '저가', '거래량']:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',',''), errors='coerce')
+            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
-    return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
+    return df.dropna(subset=['날짜', '종가']).sort_values('날짜').reset_index(drop=True)
 
 # --- 핵심 분석 로직 ---
 def analyze_stock(code, name, current_change):
@@ -68,41 +68,29 @@ def analyze_stock(code, name, current_change):
         df = get_price_data(code)
         if df is None or len(df) < 40: return None
 
-        # --- 1. 모든 필요 지표 계산 ---
         df['20MA'] = df['종가'].rolling(20).mean()
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         macd = ema12 - ema26
         signal = macd.ewm(span=9, adjust=False).mean()
         df['MACD_hist'] = macd - signal
-
         cci_period = 20
         df['tp'] = (df['고가'] + df['저가'] + df['종가']) / 3
         df['sma_tp'] = df['tp'].rolling(cci_period).mean()
         df['mean_dev'] = df['tp'].rolling(cci_period).apply(lambda x: pd.Series(x).mad(), raw=True)
         df['CCI'] = (df['tp'] - df['sma_tp']) / (0.015 * df['mean_dev'])
-        
         if len(df) < 5: return None
 
-        # --- 2. 최근 5일 데이터 및 최신/이전 값 추출 ---
         recent_df = df.tail(5)
         last, prev = df.iloc[-1], df.iloc[-2]
 
-        # --- 3. 종합 해석을 위한 다차원 분석 ---
-        # ① 가격 추세 분석
         price_trend_str = ""
-        if prev['종가'] < prev['20MA'] and last['종가'] > last['20MA']:
-            price_trend_str = "🚀 20일선 상향돌파"
-        elif (recent_df['종가'] > recent_df['20MA']).all():
-            price_trend_str = "📈 상승 지속 (20일선 위)"
-        elif last['종가'] > last['20MA']:
-            price_trend_str = "상승 시도 (20일선 위)"
-        elif prev['종가'] > prev['20MA'] and last['종가'] < last['20MA']:
-            price_trend_str = "📉 20일선 하향이탈"
-        else:
-            price_trend_str = "하락 추세 (20일선 아래)"
+        if prev['종가'] < prev['20MA'] and last['종가'] > last['20MA']: price_trend_str = "🚀 20일선 상향돌파"
+        elif (recent_df['종가'] > recent_df['20MA']).all(): price_trend_str = "📈 상승 지속 (20일선 위)"
+        elif last['종가'] > last['20MA']: price_trend_str = "상승 시도 (20일선 위)"
+        elif prev['종가'] > prev['20MA'] and last['종가'] < last['20MA']: price_trend_str = "📉 20일선 하향이탈"
+        else: price_trend_str = "하락 추세 (20일선 아래)"
 
-        # ② 모멘텀(MACD) 추세 분석
         macd_trend_str = ""
         if (recent_df['MACD_hist'].tail(3).diff() > 0).all():
             if last['MACD_hist'] > 0: macd_trend_str = "MACD 상승 가속"
@@ -110,39 +98,28 @@ def analyze_stock(code, name, current_change):
         elif (recent_df['MACD_hist'].tail(3).diff() < 0).all():
             if last['MACD_hist'] > 0: macd_trend_str = "MACD 상승 둔화"
             else: macd_trend_str = "MACD 하락 가속"
-        elif prev['MACD_hist'] < 0 and last['MACD_hist'] > 0:
-            macd_trend_str = "🔥 MACD 양전"
-        else:
-            macd_trend_str = "MACD 횡보"
+        elif prev['MACD_hist'] < 0 and last['MACD_hist'] > 0: macd_trend_str = "🔥 MACD 양전"
+        else: macd_trend_str = "MACD 횡보"
 
-        # ③ CCI 상태 분석
         cci_status_str = ""
         if last['CCI'] > 100: cci_status_str = "CCI 과매수권 (>100)"
         elif last['CCI'] < -100: cci_status_str = "CCI 과매도권 (<-100)"
         elif last['CCI'] > 0: cci_status_str = "CCI 상승추세 (0~100)"
         else: cci_status_str = "CCI 하락추세 (-100~0)"
         
-        # --- 4. 상태(Status) 결정 및 최종 해석 조합 ---
         status = "관망"
-        if "20일선 상향돌파" in price_trend_str and "MACD 양전" in macd_trend_str:
-            status = "★강력 매수★"
-        elif "20일선 상향돌파" in price_trend_str or "MACD 양전" in macd_trend_str:
-            status = "매수"
-        elif "MACD 반등 시도" in macd_trend_str and last['CCI'] < 0:
-            status = "매수 관심"
-        elif prev['CCI'] < -100 and last['CCI'] > -100 :
-             status = "CCI 매수 관심"
-        elif "20일선 하향이탈" in price_trend_str or "MACD 하락 가속" in macd_trend_str:
-            status = "적극 매도"
-        elif last['CCI'] > 100 and (recent_df['CCI'].diff() < 0).any():
-            status = "매도 관심"
+        if "20일선 상향돌파" in price_trend_str and "MACD 양전" in macd_trend_str: status = "★강력 매수★"
+        elif "20일선 상향돌파" in price_trend_str or "MACD 양전" in macd_trend_str: status = "매수"
+        elif "MACD 반등 시도" in macd_trend_str and last['CCI'] < 0: status = "매수 관심"
+        elif prev['CCI'] < -100 and last['CCI'] > -100: status = "CCI 매수 관심"
+        elif "20일선 하향이탈" in price_trend_str or "MACD 하락 가속" in macd_trend_str: status = "적극 매도"
+        elif last['CCI'] > 100 and (recent_df['CCI'].diff() < 0).any(): status = "매도 관심"
 
         trend = f"{price_trend_str} | {macd_trend_str} | {cci_status_str}"
 
-        # --- 5. 최종 결과 데이터 생성 ---
         disparity = ((last['종가'] / last['20MA']) - 1) * 100 if last['20MA'] > 0 else 0
         disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
-        chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
+        chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
 
         return [code, name, current_change, int(last['종가']), int(last['20MA']), disparity_fmt, status, trend, chart_url]
     except Exception as e:
@@ -192,30 +169,42 @@ if start_btn:
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
             if res:
                 results.append(res)
-                # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-                # ★★★ 바로 이 부분의 컬럼 목록이 최종 수정되었습니다 ★★★
-                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '이격률', '상태', '해석', '차트'])
-                # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-                st.session_state['df_all'] = df_all
-                
-                total_metric.metric("전체 종목", f"{len(df_all)}개")
-                buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
-                sell_metric.metric("매도 신호", f"{len(df_all[df_all['상태'].str.contains('매도')])}개")
-                
-                with main_result_area:
-                    show_styled_dataframe(df_all)
-            progress_bar.progress((i + 1) / len(market_df))
-        st.success("✅ 분석 완료!")
+        
+        if results:
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            # ★★★ 문제의 원인이었던 이 부분의 컬럼 목록을 최종 수정했습니다 ★★★
+            # ★★★ (['차이', '손절/익절']이 제거된 9개 컬럼 목록) ★★★
+            df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '이격률', '상태', '해석', '차트'])
+            # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+            st.session_state['df_all'] = df_all
 
-if 'df_all' in st.session_state:
+    if 'df_all' in st.session_state:
+        df_all = st.session_state['df_all']
+        total_metric.metric("전체 종목", f"{len(df_all)}개")
+        buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
+        sell_metric.metric("매도 신호", f"{len(df_all[df_all['상태'].str.contains('매도')])}개")
+        
+        display_df = df_all.copy()
+        if st.session_state.filter == "매수": display_df = df_all[df_all['상태'].str.contains("매수")]
+        elif st.session_state.filter == "매도": display_df = df_all[df_all['상태'].str.contains("매도")]
+        
+        with main_result_area:
+            show_styled_dataframe(display_df)
+    
+    st.success("✅ 분석 완료!")
+
+
+if 'df_all' in st.session_state and not st.session_state['df_all'].empty:
     df = st.session_state['df_all']
     display_df = df.copy()
     if st.session_state.filter == "매수": display_df = df[df['상태'].str.contains("매수")]
     elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("매도")]
     
+    result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter})")
     with main_result_area:
         show_styled_dataframe(display_df)
 
+    # Outlook 전송 버튼 (상세 '해석' 내용 포함하도록 수정)
     email_summary = display_df[['종목명', '현재가', '상태', '해석']].to_string(index=False)
     encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
     mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
@@ -223,4 +212,3 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
-
