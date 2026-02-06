@@ -155,7 +155,7 @@ if start_btn:
     
     st.session_state.df_all = pd.DataFrame(results, columns=cols)
     st.success("✅ 분석 완료!")
-    st.experimental_rerun() # 분석 완료 후 화면을 한번 더 정리
+
 
 else:
     df_all = st.session_state.df_all
@@ -179,3 +179,4 @@ else:
             outlook_area.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 현재 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
     else:
         main_result_area.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
