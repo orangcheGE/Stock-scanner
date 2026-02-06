@@ -18,8 +18,9 @@ def get_headers():
         'Referer': 'https://finance.naver.com/'
     }
 
-# --- 분석 로직 (기능 동일) ---
+# --- 데이터 수집 함수 (변경 없음) ---
 def get_market_sum_pages(page_list, market="KOSPI"):
+    # (기존 코드와 동일)
     sosok = 0 if market == "KOSPI" else 1
     codes, names, changes = [], [], []
     for page in page_list:
@@ -45,6 +46,7 @@ def get_market_sum_pages(page_list, market="KOSPI"):
     return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률': changes})
 
 def get_price_data(code, max_pages=15):
+    # (기존 코드와 동일)
     url = f"https://finance.naver.com/item/sise_day.naver?code={code}"
     dfs = []
     for page in range(1, max_pages+1):
@@ -62,6 +64,7 @@ def get_price_data(code, max_pages=15):
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
+# ★★★ 1. 분석 함수를 새 버전으로 교체 ★★★
 def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
@@ -94,7 +97,6 @@ def analyze_stock(code, name, current_change):
         price = last['종가']
         
         # --- 2. 핵심 신호 포착 및 텍스트 변환 ---
-
         # MACD 신호 해석
         macd_last, macd_prev = last['MACD_hist'], prev['MACD_hist']
         macd_signal = ""
@@ -132,7 +134,6 @@ def analyze_stock(code, name, current_change):
             ma_signal = f"20일선 {'위' if price > ma20 else '아래'} ({disparity:.1f}%)"
 
         # --- 3. 최종 판단 및 결과 조합 ---
-        
         # Trend: 포착된 모든 신호를 나열
         trend_signals = [s for s in [ma_signal, macd_signal, cci_signal] if s]
         trend = " | ".join(trend_signals)
@@ -162,8 +163,9 @@ def analyze_stock(code, name, current_change):
 
     except Exception as e:
         return None
-        
+
 def show_styled_dataframe(dataframe):
+    # (기존 코드와 동일)
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
         return
@@ -176,24 +178,21 @@ def show_styled_dataframe(dataframe):
     )
 
 # -------------------------
-# UI 부분 (상시 노출 레이아웃)
+# UI 부분 (대부분 변경 없음)
 # -------------------------
 st.title("🛡️ 20일선 스마트 데이터 스캐너")
 
-# 사이드바 설정
 st.sidebar.header("설정")
 market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
 selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
 start_btn = st.sidebar.button("🚀 분석 시작")
 
-# --- 메인 화면: 버튼 및 요약 섹션 (상시 노출) ---
 st.subheader("📊 진단 및 필터링")
 c1, c2, c3 = st.columns(3)
 total_metric = c1.empty()
 buy_metric = c2.empty()
 sell_metric = c3.empty()
 
-# 기본 메트릭 초기값
 total_metric.metric("전체 종목", "0개")
 buy_metric.metric("매수 신호", "0개")
 sell_metric.metric("매도 신호", "0개")
@@ -208,7 +207,6 @@ if btn_all: st.session_state.filter = "전체"
 if btn_buy: st.session_state.filter = "매수"
 if btn_sell: st.session_state.filter = "매도"
 
-# 실시간 분석 결과가 나타날 공간
 st.markdown("---")
 result_title = st.empty()
 result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter})")
@@ -224,15 +222,15 @@ if start_btn:
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
             if res:
                 results.append(res)
-                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '해석', '차트'])
+
+                # ★★★ 2. 컬럼 이름을 '트렌드 신호'로 변경 ★★★
+                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '트렌드 신호', '차트'])
                 st.session_state['df_all'] = df_all
                 
-                # 메트릭 업데이트
                 total_metric.metric("전체 종목", f"{len(df_all)}개")
                 buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
                 sell_metric.metric("매도 신호", f"{len(df_all[df_all['상태'].str.contains('매도')])}개")
                 
-                # 실시간 테이블 업데이트
                 with main_result_area:
                     show_styled_dataframe(df_all)
             progress_bar.progress((i + 1) / len(market_df))
@@ -248,14 +246,16 @@ if 'df_all' in st.session_state:
     with main_result_area:
         show_styled_dataframe(display_df)
 
-    # Outlook 버튼 상시 노출 (데이터 있을 때만 활성화되는 링크)
-    email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
+    email_summary = display_df[['종목명', '현재가', '상태', '트렌드 신호']].to_string(index=False)
     encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
     mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
     st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
+
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
+
 
 
 
