@@ -16,7 +16,7 @@ st.set_page_config(page_title="20일선 스마트 대시보드", layout="wide")
 @st.cache_data(ttl=3600) # 1시간 동안 캐시
 def get_market_sum_pages(page_list, market="KOSPI"):
     sosok = 0 if market == "KOSPI" else 1
-    codes, names, changes = [], [], []
+    all_codes, all_names, all_changes = [], [], []
     for page in page_list:
         url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
         try:
@@ -32,16 +32,16 @@ def get_market_sum_pages(page_list, market="KOSPI"):
                 if not a_tag: continue
                 match = re.search(r'code=(\d{6})', a_tag['href'])
                 if match:
-                    codes.append(match.group(1))
-                    names.append(a_tag.get_text(strip=True))
-                    changes.append(tds[4].get_text(strip=True))
-            time.sleep(0.1)
+                    all_codes.append(match.group(1))
+                    all_names.append(a_tag.get_text(strip=True))
+                    all_changes.append(tds[4].get_text(strip=True))
+            time.sleep(0.1) # 네이버 서버 부하 방지
         except requests.exceptions.RequestException:
             continue
-    return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률': changes})
+    return pd.DataFrame({'종목코드': all_codes, '종목명': all_names, '등락률': all_changes})
 
 @st.cache_data(ttl=600) # 10분 동안 캐시
-def get_price_data(_code, max_pages=15): # code -> _code로 변경하여 streamlit 캐싱이 인식을 잘 하도록 함
+def get_price_data(_code, max_pages=15):
     url = f"https://finance.naver.com/item/sise_day.naver?code={_code}"
     dfs = []
     for page in range(1, max_pages + 1):
@@ -65,15 +65,13 @@ def get_price_data(_code, max_pages=15): # code -> _code로 변경하여 streaml
 
 # --- 분석 및 UI 함수 ---
 def get_headers():
-    return {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://finance.naver.com/'
-    }
+    return {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Referer': 'https://finance.naver.com/'}
 
 def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
         if df is None or len(df) < 40: return None
+        # ... (내부 계산 로직은 이전과 동일)
         df['TP'] = (df['고가'] + df['저가'] + df['종가']) / 3
         df['SMA_TP'] = df['TP'].rolling(20).mean()
         mean_dev = df['TP'].rolling(20).apply(lambda x: (x - x.mean()).abs().mean(), raw=True)
@@ -118,10 +116,7 @@ def analyze_stock(code, name, current_change):
     except Exception:
         return None
 
-def show_styled_dataframe(dataframe):
-    if dataframe is None or dataframe.empty:
-        st.info("조건에 맞는 종목이 없거나 분석 전입니다.")
-        return
+def show_styled_dataframe(df):
     def color_status(val):
         s_val = str(val)
         if any(k in s_val for k in ['돌파', '지지', '근접', '매수', '전환']): return 'color: #ef5350; font-weight: bold'
@@ -129,15 +124,18 @@ def show_styled_dataframe(dataframe):
         if any(k in s_val for k in ['이탈', '하락']): return 'color: #42a5f5; font-weight: bold'
         return ''
     st.dataframe(
-        dataframe.style.applymap(color_status, subset=['상태'])
+        df.style.applymap(color_status, subset=['상태'])
         .applymap(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등락률', '이격률']),
         use_container_width=True,
         column_config={"차트": st.column_config.LinkColumn("차트", display_text="열기"), "종목코드": st.column_config.TextColumn("코드", width="small")},
-        hide_index=True
-    )
+        hide_index=True)
 
 # --- 메인 앱 ---
 st.title("🛡️ 20일선 스마트 데이터 스캐너")
+
+# 세션 상태 초기화
+if 'df_all' not in st.session_state: st.session_state.df_all = pd.DataFrame()
+if 'filter' not in st.session_state: st.session_state.filter = "전체"
 
 # 사이드바
 with st.sidebar:
@@ -147,75 +145,81 @@ with st.sidebar:
     if st.button("🚀 분석 시작"):
         st.session_state.run_analysis = True
         st.session_state.filter = "전체" # 분석 시작 시 항상 '전체' 보기로
-        if 'df_all' in st.session_state: del st.session_state['df_all'] # 이전 결과 초기화
+        st.session_state.df_all = pd.DataFrame() # 결과 초기화
 
 # 필터링 UI
 st.subheader("📊 진단 및 필터링")
-c1, c2, c3 = st.columns(3)
-total_metric = c1.empty(); buy_metric = c2.empty(); sell_metric = c3.empty()
+c1, c2, c3 = st.columns(3); total_metric = c1.empty(); buy_metric = c2.empty(); sell_metric = c3.empty()
 BUY_KEYWORDS = ['돌파', '지지', '근접', '매수', '전환']; SELL_KEYWORDS = ['이탈', '과열', '주의', '하락']
 col1, col2, col3 = st.columns(3)
-if 'filter' not in st.session_state: st.session_state.filter = "전체"
-if col1.button("🔄 전체 보기", use_container_width=True): st.session_state.filter = "전체"
-if col2.button("🔴 매수 신호만", use_container_width=True): st.session_state.filter = "매수"
-if col3.button("🔵 매도/주의만", use_container_width=True): st.session_state.filter = "매도"
+if col1.button("🔄 전체 보기", use_container_width=True): st.session_state.filter = "전체"; st.session_state.run_analysis = False
+if col2.button("🔴 매수 신호만", use_container_width=True): st.session_state.filter = "매수"; st.session_state.run_analysis = False
+if col3.button("🔵 매도/주의만", use_container_width=True): st.session_state.filter = "매도"; st.session_state.run_analysis = False
 st.markdown("---")
-result_title_area = st.empty(); main_result_area = st.empty()
+
+# 결과 표시 영역
+result_title_area = st.empty()
+main_result_area = st.empty()
 
 # ★★★ 핵심 실행 로직 ★★★
-# 1. 분석 실행
 if st.session_state.get('run_analysis', False):
     market_df = get_market_sum_pages(selected_pages, market)
-    if not market_df.empty:
-        results = []
-        progress_bar = st.progress(0, "종목 분석 중...")
-        total_stocks = len(market_df)
-        
-        for i, row in market_df.iterrows():
-            res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
-            if res: results.append(res)
-            
-            # --- 실시간 업데이트 ---
-            cols = ['종목코드', '종목명', '등락률', '현재가', '20MA', '이격', '이격률', '손절/익절', '상태', '해석', '차트']
-            df_so_far = pd.DataFrame(results, columns=cols)
-            st.session_state['df_all'] = df_so_far # 세션에 중간 결과 계속 저장
-            
-            # 메트릭 업데이트
-            buy_count = len(df_so_far[df_so_far['상태'].str.contains('|'.join(BUY_KEYWORDS), na=False)])
-            sell_count = len(df_so_far[df_so_far['상태'].str.contains('|'.join(SELL_KEYWORDS), na=False)])
-            total_metric.metric("전체 종목", f"{len(df_so_far)}개")
-            buy_metric.metric("매수 신호", f"{buy_count}개")
-            sell_metric.metric("매도/주의", f"{sell_count}개")
-
-            # 테이블 실시간 표시
-            with result_title_area, main_result_area.container():
-                st.subheader(f"🔍 분석 중... ({i + 1}/{total_stocks}개)")
-                show_styled_dataframe(df_so_far)
-            
-            progress_bar.progress((i + 1) / total_stocks)
-
-        st.success("✅ 분석 완료!")
-    else:
-        st.error("선택된 페이지에서 종목 정보를 가져오지 못했습니다.")
-    st.session_state.run_analysis = False # 분석 완료 후 플래그 해제
-
-# 2. 분석 후 또는 필터링 시 결과 표시
-# 'run_analysis'가 False이고, 'df_all'이 세션에 있을 때만 실행
-elif 'df_all' in st.session_state:
-    df = st.session_state['df_all']
-    display_df = df.copy()
-
-    if st.session_state.filter == "매수":
-        display_df = df[df['상태'].str.contains('|'.join(BUY_KEYWORDS), na=False)]
-    elif st.session_state.filter == "매도":
-        display_df = df[df['상태'].str.contains('|'.join(SELL_KEYWORDS), na=False)]
-
-    total_count = len(df); buy_count = len(df[df['상태'].str.contains('|'.join(BUY_KEYWORDS), na=False)]); sell_count = len(df[df['상태'].str.contains('|'.join(SELL_KEYWORDS), na=False)])
-    total_metric.metric("전체 종목", f"{total_count}개"); buy_metric.metric("매수 신호", f"{buy_count}개"); sell_metric.metric("매도/주의", f"{sell_count}개")
+    results = []
+    progress_bar = st.progress(0, "종목 분석 중...")
+    total_stocks = len(market_df)
     
-    with result_title_area, main_result_area.container():
-        st.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
-        show_styled_dataframe(display_df)
+    for i, row in market_df.iterrows():
+        res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
+        if res: results.append(res)
+        
+        # --- 실시간 업데이트 ---
+        cols = ['종목코드', '종목명', '등락률', '현재가', '20MA', '이격', '이격률', '손절/익절', '상태', '해석', '차트']
+        df_so_far = pd.DataFrame(results, columns=cols)
+        
+        # 메트릭 업데이트
+        buy_count = len(df_so_far[df_so_far['상태'].str.contains('|'.join(BUY_KEYWORDS), na=False)])
+        sell_count = len(df_so_far[df_so_far['상태'].str.contains('|'.join(SELL_KEYWORDS), na=False)])
+        total_metric.metric("전체 종목", f"{len(df_so_far)}개"); buy_metric.metric("매수 신호", f"{buy_count}개"); sell_metric.metric("매도/주의", f"{sell_count}개")
+
+        # 테이블 실시간 표시
+        with result_title_area, main_result_area.container():
+            st.subheader(f"🔍 분석 중... ({i + 1}/{total_stocks}개)")
+            if df_so_far.empty:
+                st.info("분석된 종목이 아직 없습니다...")
+            else:
+                show_styled_dataframe(df_so_far)
+        
+        progress_bar.progress((i + 1) / total_stocks)
+    
+    st.session_state.df_all = pd.DataFrame(results, columns=cols) # 최종 결과 저장
+    st.session_state.run_analysis = False
+    st.success("✅ 분석 완료!")
+    st.experimental_rerun() # 화면을 한번 더 재실행하여 최종 상태를 깔끔하게 표시
+
+# 분석 중이 아닐 때, 세션에 데이터가 있으면 표시
+else:
+    df_all = st.session_state.get('df_all', pd.DataFrame())
+    if df_all.empty:
+        main_result_area.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+    else:
+        display_df = df_all.copy()
+        if st.session_state.filter == "매수":
+            display_df = df_all[df_all['상태'].str.contains('|'.join(BUY_KEYWORDS), na=False)]
+        elif st.session_state.filter == "매도":
+            display_df = df_all[df_all['상태'].str.contains('|'.join(SELL_KEYWORDS), na=False)]
+
+        total_count = len(df_all); buy_count = len(df_all[df_all['상태'].str.contains('|'.join(BUY_KEYWORDS), na=False)]); sell_count = len(df_all[df_all['상태'].str.contains('|'.join(SELL_KEYWORDS), na=False)])
+        total_metric.metric("전체 종목", f"{total_count}개"); buy_metric.metric("매수 신호", f"{buy_count}개"); sell_metric.metric("매도/주의", f"{sell_count}개")
+        
+        result_title_area.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
+        with main_result_area.container():
+            show_styled_dataframe(display_df)
+
+        if not display_df.empty:
+            email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
+            encoded_body = urllib.parse.quote(f"주식 분석 리포트 ({datetime.now().strftime('%Y-%m-%d')})\n\n{email_summary}")
+            mailto_url = f"mailto:?subject=주식 리포트&body={encoded_body}"
+            st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 현재 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
 
     if not display_df.empty:
         email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
@@ -225,3 +229,4 @@ elif 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
