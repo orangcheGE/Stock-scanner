@@ -85,7 +85,7 @@ def analyze_stock(code, name, current_change):
         elif price < ma20 and macd_last < macd_prev: status, trend = "적극 매도", "🧊 추세 하락"
         else: status, trend = "관망", "🌊 방향 탐색"
 
-        chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
+        chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
         return [code, name, current_change, int(price), int(ma20), int(diff), disparity_fmt, sl_tp, status, f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}", chart_url]
     except: return None
 
@@ -182,3 +182,4 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
