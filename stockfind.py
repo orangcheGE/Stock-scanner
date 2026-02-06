@@ -45,7 +45,7 @@ def get_market_sum_pages(page_list, market="KOSPI"):
     return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률': changes})
 
 def get_price_data(code, max_pages=15):
-    url = f"https://finance.naver.com/item/sise_day.naver?code={code}"
+    url = f"https://finance.naver.com/item/fchart.naver?code={code}"
     dfs = []
     for page in range(1, max_pages+1):
         try:
@@ -241,4 +241,5 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
