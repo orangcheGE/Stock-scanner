@@ -1,4 +1,4 @@
-iimport streamlit as st
+import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -235,4 +235,5 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
