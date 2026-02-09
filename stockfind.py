@@ -187,15 +187,28 @@ main_result_area = st.empty()
 
 # 분석 실행 로직
 if start_btn:
+    # 1. 분석 시작 시, 이전 결과가 있다면 초기화
+    if 'df_all' in st.session_state:
+        del st.session_state['df_all']
+    
+    # 2. 새로운 분석 시작
     market_df = get_market_sum_pages(selected_pages, market)
     if not market_df.empty:
         results = []
-        progress_bar = st.progress(0)
+        progress_bar = st.progress(0, "분석을 준비 중입니다...")
+
         for i, (idx, row) in enumerate(market_df.iterrows()):
+            # 진행률 업데이트
+            progress_bar.progress((i + 1) / len(market_df), f"분석 중: {row['종목명']} ({i+1}/{len(market_df)})")
+
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
+            
+            # 분석 결과가 있을 경우에만 실시간 업데이트
             if res:
                 results.append(res)
                 df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '해석', '차트'])
+                
+                # session_state에 실시간으로 저장
                 st.session_state['df_all'] = df_all
                 
                 # 메트릭 업데이트
@@ -203,30 +216,51 @@ if start_btn:
                 buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
                 sell_metric.metric("매도 신호", f"{len(df_all[df_all['상태'].str.contains('매도')])}개")
                 
-                # 실시간 테이블 업데이트
-                with main_result_area:
+                # 【핵심】 실시간 테이블 업데이트
+                # for문 안에서 main_result_area에 계속 덮어쓰기하여 실시간처럼 보이게 함
+                with main_result_area.container():
                     show_styled_dataframe(df_all)
-            progress_bar.progress((i + 1) / len(market_df))
+
+        progress_bar.empty() # 진행률 바 제거
         st.success("✅ 분석 완료!")
+    else:
+        st.error("선택된 페이지에서 종목 정보를 가져오지 못했습니다.")
 
-# 분석 후 필터링 적용 출력
-if 'df_all' in st.session_state:
-    df = st.session_state['df_all']
-    display_df = df.copy()
-    if st.session_state.filter == "매수": display_df = df[df['상태'].str.contains("매수")]
-    elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("매도")]
-    
-    with main_result_area:
-        show_styled_dataframe(display_df)
-
-    # Outlook 버튼 상시 노출 (데이터 있을 때만 활성화되는 링크)
-    email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
-    encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
-    mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
-    st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
+# 【핵심】 분석 시작 버튼을 누르지 않은 모든 경우 (초기 화면, 필터링 버튼 클릭 등)
 else:
-    with main_result_area:
-        st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+    # 분석된 데이터가 st.session_state에 있을 경우
+    if 'df_all' in st.session_state and not st.session_state['df_all'].empty:
+        df = st.session_state['df_all']
+        display_df = df.copy() # 원본 데이터는 보존
+
+        # 필터링 로직
+        if st.session_state.filter == "매수":
+            display_df = df[df['상태'].str.contains("매수")]
+            result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}건)")
+        elif st.session_state.filter == "매도":
+            display_df = df[df['상태'].str.contains("매도")]
+            result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}건)")
+        else:
+             result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}건)")
+
+        # 필터링된 결과를 메인 영역에 표시
+        with main_result_area.container():
+            show_styled_dataframe(display_df)
+
+        # Outlook 전송 버튼 (필터링된 결과 기준)
+        if not display_df.empty:
+            email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
+            encoded_body = urllib.parse.quote(f"주식 분석 리포트 ({datetime.now().strftime('%Y-%m-%d')})\n\n{email_summary}")
+            mailto_url = f"mailto:?subject=주식분석리포트&body={encoded_body}"
+            st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 현재 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
+
+    # 가장 처음 앱을 실행했을 때 (분석된 데이터가 없을 경우)
+    else:
+        with main_result_area.container():
+            st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
+
+
 
 
 
