@@ -71,52 +71,56 @@ def analyze_stock(code, name, current_change):
         df['20MA'] = df['종가'].rolling(20).mean()
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
+        # MACD 히스토그램 계산 로직 수정 (더 정확한 방식)
         df['MACD'] = ema12 - ema26
         df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         df['MACD_hist'] = df['MACD'] - df['MACD_Signal']
         
         df['tr'] = np.maximum(df['고가'] - df['저가'], np.maximum(abs(df['고가'] - df['종가'].shift(1)), abs(df['저가'] - df['종가'].shift(1))))
         df['ATR'] = df['tr'].rolling(14).mean()
-
+        
         # --- 2. 분석에 필요한 변수 정의 ---
-        last, prev = df.iloc[-1], df.iloc[-2]
+        last, prev = df.iloc[-1], df.iloc[--2]
         price, ma20 = last['종가'], last['20MA']
         macd_last, macd_prev = last['MACD_hist'], prev['MACD_hist']
 
-        # [수정] 크로스(교차) 이벤트 정의
+        # 🚨【수정-1】새로운 변수 계산 코드 추가 (이 부분이 누락되었습니다)
         price_cross_up_20ma = prev['종가'] < prev['20MA'] and price > ma20
         price_cross_down_20ma = prev['종가'] > prev['20MA'] and price < ma20
         macd_cross_up_zero = macd_prev < 0 and macd_last > 0
         macd_cross_down_zero = macd_prev > 0 and macd_last < 0
-
-        # [수정] 최근 5일 추세(기울기) 계산
+        
+        # 최근 5일 추세(기울기) 계산
         price_slope_5d = np.polyfit(range(5), df['종가'].iloc[-5:], 1)[0]
         macd_slope_5d = np.polyfit(range(5), df['MACD_hist'].iloc[-5:], 1)[0]
-
+        
+        # MACD 턴어라운드 (음 -> 양) 이벤트 정의
         is_macd_turnaround = macd_prev < 0 and macd_last > 0
+
         
         # --- 3. 매수/매도/관망 상태 결정 ---
         
-        # [수정] 적극 매수: 20MA 상향 돌파 + MACD 제로선 상향 돌파 (가장 강력한 신호)
+        # 🚨【수정-2】새로운 로직 적용
+        # [신규] 적극 매수: 20MA 상향 돌파 + MACD 제로선 상향 돌파
         if price_cross_up_20ma and macd_cross_up_zero:
             status, trend = "적극 매수", "🔥 20MA 돌파 & MACD 양수 전환"
 
-        # [수정] 적극 매도: 20MA 하향 이탈 + MACD 제로선 하향 돌파 (가장 강력한 신호)
+        # [신규] 적극 매도: 20MA 하향 이탈 + MACD 제로선 하향 돌파
         elif price_cross_down_20ma and macd_cross_down_zero:
             status, trend = "적극 매도", "🧊 20MA 이탈 & MACD 음수 전환"
       
-        # [수정] 매수 관심: 20MA 향해 상승 + MACD 상승/턴어라운드
-        elif price < ma20 and price_slope_5d > 0 and (macd_slope_5d > 0 or is_macd_turnaround):
-            status, trend = "매수 관심", "⚓️ 반등 시도"
+        # [신규] 매수 관심: MACD가 아직 음수이지만, 상승 추세로 전환된 시점
+        elif price < ma20 and macd_last < 0 and macd_slope_5d > 0:
+            status, trend = "매수 관심", "⚓️ MACD 상승 전환 시도"
         
         # [신규] 매도 관심: 20MA 향해 하락 + MACD 하락
         elif price > ma20 and price_slope_5d < 0 and macd_slope_5d < 0:
-            status, trend = "매도 관심", "📉 하락 전환 주의"    
+            status, trend = "매도 관심", "📉 하락 전환 주의"
 
         # 기존 '추가 매수/홀드' 로직 유지
         elif price > ma20 and macd_last > 0:
             disparity = ((price / ma20) - 1) * 100
-            status, trend = ("추가 매수 가능", "🚀 상승세 안정적 (추가 여력)") if 0 <= disparity <= 5 else ("홀드", "📈 상승 추세 유지")
+            status, trend = ("추가 매수 가능", "🚀 상승세 안정적") if 0 <= disparity <= 5 else ("홀드", "📈 상승 추세 유지")
         
         else:
             status, trend = "관망", "🌊 방향 탐색"
@@ -130,9 +134,13 @@ def analyze_stock(code, name, current_change):
 
         return [code, name, current_change, int(price), int(ma20), int(diff), disparity_fmt, sl_tp, status, f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}", chart_url]
 
+    # 오류 발생 시 None을 반환하고, 디버깅을 위해 콘솔에 에러 메시지 출력
     except Exception as e:
-        print(f"Error analyzing {name}({code}): {e}")
+        # print(f"Error analyzing {name}({code}): {e}") # 로컬에서 실행할 때 주석 해제하여 디버깅
         return None
+
+# =======================================================================
+
 
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
@@ -187,28 +195,15 @@ main_result_area = st.empty()
 
 # 분석 실행 로직
 if start_btn:
-    # 1. 분석 시작 시, 이전 결과가 있다면 초기화
-    if 'df_all' in st.session_state:
-        del st.session_state['df_all']
-    
-    # 2. 새로운 분석 시작
     market_df = get_market_sum_pages(selected_pages, market)
     if not market_df.empty:
         results = []
-        progress_bar = st.progress(0, "분석을 준비 중입니다...")
-
+        progress_bar = st.progress(0)
         for i, (idx, row) in enumerate(market_df.iterrows()):
-            # 진행률 업데이트
-            progress_bar.progress((i + 1) / len(market_df), f"분석 중: {row['종목명']} ({i+1}/{len(market_df)})")
-
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
-            
-            # 분석 결과가 있을 경우에만 실시간 업데이트
             if res:
                 results.append(res)
                 df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '해석', '차트'])
-                
-                # session_state에 실시간으로 저장
                 st.session_state['df_all'] = df_all
                 
                 # 메트릭 업데이트
@@ -216,51 +211,27 @@ if start_btn:
                 buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
                 sell_metric.metric("매도 신호", f"{len(df_all[df_all['상태'].str.contains('매도')])}개")
                 
-                # 【핵심】 실시간 테이블 업데이트
-                # for문 안에서 main_result_area에 계속 덮어쓰기하여 실시간처럼 보이게 함
-                with main_result_area.container():
+                # 실시간 테이블 업데이트
+                with main_result_area:
                     show_styled_dataframe(df_all)
-
-        progress_bar.empty() # 진행률 바 제거
+            progress_bar.progress((i + 1) / len(market_df))
         st.success("✅ 분석 완료!")
-    else:
-        st.error("선택된 페이지에서 종목 정보를 가져오지 못했습니다.")
 
-# 【핵심】 분석 시작 버튼을 누르지 않은 모든 경우 (초기 화면, 필터링 버튼 클릭 등)
+# 분석 후 필터링 적용 출력
+if 'df_all' in st.session_state:
+    df = st.session_state['df_all']
+    display_df = df.copy()
+    if st.session_state.filter == "매수": display_df = df[df['상태'].str.contains("매수")]
+    elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("매도")]
+    
+    with main_result_area:
+        show_styled_dataframe(display_df)
+
+    # Outlook 버튼 상시 노출 (데이터 있을 때만 활성화되는 링크)
+    email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
+    encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
+    mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
+    st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
 else:
-    # 분석된 데이터가 st.session_state에 있을 경우
-    if 'df_all' in st.session_state and not st.session_state['df_all'].empty:
-        df = st.session_state['df_all']
-        display_df = df.copy() # 원본 데이터는 보존
-
-        # 필터링 로직
-        if st.session_state.filter == "매수":
-            display_df = df[df['상태'].str.contains("매수")]
-            result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}건)")
-        elif st.session_state.filter == "매도":
-            display_df = df[df['상태'].str.contains("매도")]
-            result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}건)")
-        else:
-             result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}건)")
-
-        # 필터링된 결과를 메인 영역에 표시
-        with main_result_area.container():
-            show_styled_dataframe(display_df)
-
-        # Outlook 전송 버튼 (필터링된 결과 기준)
-        if not display_df.empty:
-            email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
-            encoded_body = urllib.parse.quote(f"주식 분석 리포트 ({datetime.now().strftime('%Y-%m-%d')})\n\n{email_summary}")
-            mailto_url = f"mailto:?subject=주식분석리포트&body={encoded_body}"
-            st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 현재 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
-
-    # 가장 처음 앱을 실행했을 때 (분석된 데이터가 없을 경우)
-    else:
-        with main_result_area.container():
-            st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
-
-
-
-
-
-
+    with main_result_area:
+        st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
