@@ -62,12 +62,6 @@ def get_price_data(code, max_pages=15):
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
-import numpy as np
-import pandas as pd
-
-# get_price_data 함수는 이미 있다고 가정합니다.
-# from your_module import get_price_data
-
 def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
@@ -98,6 +92,8 @@ def analyze_stock(code, name, current_change):
         # [수정] 최근 5일 추세(기울기) 계산
         price_slope_5d = np.polyfit(range(5), df['종가'].iloc[-5:], 1)[0]
         macd_slope_5d = np.polyfit(range(5), df['MACD_hist'].iloc[-5:], 1)[0]
+
+        is_macd_turnaround = macd_prev < 0 and macd_last > 0
         
         # --- 3. 매수/매도/관망 상태 결정 ---
         
@@ -231,5 +227,6 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
 
