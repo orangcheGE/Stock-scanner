@@ -62,32 +62,81 @@ def get_price_data(code, max_pages=15):
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
+import numpy as np
+import pandas as pd
+
+# get_price_data 함수는 이미 있다고 가정합니다.
+# from your_module import get_price_data
+
 def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
         if df is None or len(df) < 40: return None
+
+        # --- 1. 기본 지표 계산 ---
         df['20MA'] = df['종가'].rolling(20).mean()
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
-        df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
+        df['MACD'] = ema12 - ema26
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['MACD_hist'] = df['MACD'] - df['MACD_Signal']
+        
         df['tr'] = np.maximum(df['고가'] - df['저가'], np.maximum(abs(df['고가'] - df['종가'].shift(1)), abs(df['저가'] - df['종가'].shift(1))))
         df['ATR'] = df['tr'].rolling(14).mean()
+
+        # --- 2. 분석에 필요한 변수 정의 ---
         last, prev = df.iloc[-1], df.iloc[-2]
-        price, ma20, macd_last, macd_prev = last['종가'], last['20MA'], last['MACD_hist'], prev['MACD_hist']
-        diff, disparity = price - ma20, ((price / ma20) - 1) * 100
+        price, ma20 = last['종가'], last['20MA']
+        macd_last, macd_prev = last['MACD_hist'], prev['MACD_hist']
+
+        # [수정] 크로스(교차) 이벤트 정의
+        price_cross_up_20ma = prev['종가'] < prev['20MA'] and price > ma20
+        price_cross_down_20ma = prev['종가'] > prev['20MA'] and price < ma20
+        macd_cross_up_zero = macd_prev < 0 and macd_last > 0
+        macd_cross_down_zero = macd_prev > 0 and macd_last < 0
+
+        # [수정] 최근 5일 추세(기울기) 계산
+        price_slope_5d = np.polyfit(range(5), df['종가'].iloc[-5:], 1)[0]
+        macd_slope_5d = np.polyfit(range(5), df['MACD_hist'].iloc[-5:], 1)[0]
+        
+        # --- 3. 매수/매도/관망 상태 결정 ---
+        
+        # [수정] 적극 매수: 20MA 상향 돌파 + MACD 제로선 상향 돌파 (가장 강력한 신호)
+        if price_cross_up_20ma and macd_cross_up_zero:
+            status, trend = "적극 매수", "🔥 20MA 돌파 & MACD 양수 전환"
+
+        # [수정] 적극 매도: 20MA 하향 이탈 + MACD 제로선 하향 돌파 (가장 강력한 신호)
+        elif price_cross_down_20ma and macd_cross_down_zero:
+            status, trend = "적극 매도", "🧊 20MA 이탈 & MACD 음수 전환"
+      
+        # [수정] 매수 관심: 20MA 향해 상승 + MACD 상승/턴어라운드
+        elif price < ma20 and price_slope_5d > 0 and (macd_slope_5d > 0 or is_macd_turnaround):
+            status, trend = "매수 관심", "⚓️ 반등 시도"
+        
+        # [신규] 매도 관심: 20MA 향해 하락 + MACD 하락
+        elif price > ma20 and price_slope_5d < 0 and macd_slope_5d < 0:
+            status, trend = "매도 관심", "📉 하락 전환 주의"    
+
+        # 기존 '추가 매수/홀드' 로직 유지
+        elif price > ma20 and macd_last > 0:
+            disparity = ((price / ma20) - 1) * 100
+            status, trend = ("추가 매수 가능", "🚀 상승세 안정적 (추가 여력)") if 0 <= disparity <= 5 else ("홀드", "📈 상승 추세 유지")
+        
+        else:
+            status, trend = "관망", "🌊 방향 탐색"
+
+        # --- 4. 결과 포맷팅 ---
+        diff = price - ma20
+        disparity = ((price / ma20) - 1) * 100
         disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
         sl_tp = f"{int(price - last['ATR']*2)} / {int(price + last['ATR']*2)}" if pd.notna(last['ATR']) else "- / -"
-
-        if price > ma20 and macd_last > 0:
-            status, trend = ("추가 매수 가능", "🚀 상승세 안정적 (추가 여력)") if 0 <= disparity <= 3 else ("홀드", "📈 상승 추세 유지")
-        elif (prev['종가'] < prev['20MA']) and (price > ma20): status, trend = "적극 매수", "🔥 엔진 점화"
-        elif abs(price - ma20)/ma20 < 0.03 and macd_last > 0: status, trend = "매수 관심", "⚓ 반등 준비"
-        elif price < ma20 and macd_last < macd_prev: status, trend = "적극 매도", "🧊 추세 하락"
-        else: status, trend = "관망", "🌊 방향 탐색"
-
         chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
+
         return [code, name, current_change, int(price), int(ma20), int(diff), disparity_fmt, sl_tp, status, f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}", chart_url]
-    except: return None
+
+    except Exception as e:
+        print(f"Error analyzing {name}({code}): {e}")
+        return None
 
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
@@ -182,4 +231,5 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
