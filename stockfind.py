@@ -18,7 +18,7 @@ def get_headers():
         'Referer': 'https://finance.naver.com/'
     }
 
-# --- 분석 로직 (기능 동일) ---
+# --- 분석 로직 ---
 def get_market_sum_pages(page_list, market="KOSPI"):
     sosok = 0 if market == "KOSPI" else 1
     codes, names, changes = [], [], []
@@ -66,27 +66,31 @@ def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
         if df is None or len(df) < 40: return None
+        
         df['20MA'] = df['종가'].rolling(20).mean()
+        
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
-        df['tr'] = np.maximum(df['고가'] - df['저가'], np.maximum(abs(df['고가'] - df['종가'].shift(1)), abs(df['저가'] - df['종가'].shift(1))))
-        df['ATR'] = df['tr'].rolling(14).mean()
+
         last, prev = df.iloc[-1], df.iloc[-2]
         price, ma20, macd_last, macd_prev = last['종가'], last['20MA'], last['MACD_hist'], prev['MACD_hist']
-        diff, disparity = price - ma20, ((price / ma20) - 1) * 100
+        
+        disparity = ((price / ma20) - 1) * 100
         disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
-        sl_tp = f"{int(price - last['ATR']*2)} / {int(price + last['ATR']*2)}" if pd.notna(last['ATR']) else "- / -"
-
+        
         if price > ma20 and macd_last > 0:
             status, trend = ("추가 매수 가능", "🚀 상승세 안정적 (추가 여력)") if 0 <= disparity <= 3 else ("홀드", "📈 상승 추세 유지")
         elif (prev['종가'] < prev['20MA']) and (price > ma20): status, trend = "적극 매수", "🔥 엔진 점화"
         elif abs(price - ma20)/ma20 < 0.03 and macd_last > 0: status, trend = "매수 관심", "⚓ 반등 준비"
         elif price < ma20 and macd_last < macd_prev: status, trend = "적극 매도", "🧊 추세 하락"
         else: status, trend = "관망", "🌊 방향 탐색"
-
-        chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
-        return [code, name, current_change, int(price), int(ma20), int(diff), disparity_fmt, sl_tp, status, f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}", chart_url]
+            
+        chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
+        
+        # '20MA', '차이', '손절/익절' 항목 제거 후 반환
+        return [code, name, current_change, int(price), disparity_fmt, status, f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}", chart_url]
+    
     except: return None
 
 def show_styled_dataframe(dataframe):
@@ -102,24 +106,21 @@ def show_styled_dataframe(dataframe):
     )
 
 # -------------------------
-# UI 부분 (상시 노출 레이아웃)
+# UI 부분
 # -------------------------
 st.title("🛡️ 20일선 스마트 데이터 스캐너")
 
-# 사이드바 설정
 st.sidebar.header("설정")
 market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
 selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
 start_btn = st.sidebar.button("🚀 분석 시작")
 
-# --- 메인 화면: 버튼 및 요약 섹션 (상시 노출) ---
 st.subheader("📊 진단 및 필터링")
 c1, c2, c3 = st.columns(3)
 total_metric = c1.empty()
 buy_metric = c2.empty()
 sell_metric = c3.empty()
 
-# 기본 메트릭 초기값
 total_metric.metric("전체 종목", "0개")
 buy_metric.metric("매수 신호", "0개")
 sell_metric.metric("매도 신호", "0개")
@@ -134,13 +135,11 @@ if btn_all: st.session_state.filter = "전체"
 if btn_buy: st.session_state.filter = "매수"
 if btn_sell: st.session_state.filter = "매도"
 
-# 실시간 분석 결과가 나타날 공간
 st.markdown("---")
 result_title = st.empty()
 result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter})")
 main_result_area = st.empty()
 
-# 분석 실행 로직
 if start_btn:
     market_df = get_market_sum_pages(selected_pages, market)
     if not market_df.empty:
@@ -150,21 +149,19 @@ if start_btn:
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
             if res:
                 results.append(res)
-                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '20MA', '차이', '이격률', '손절/익절', '상태', '해석', '차트'])
+                # 컬럼명 리스트에서 '20MA', '차이', '손절/익절' 제거
+                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '이격률', '상태', '해석', '차트'])
                 st.session_state['df_all'] = df_all
                 
-                # 메트릭 업데이트
                 total_metric.metric("전체 종목", f"{len(df_all)}개")
                 buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
                 sell_metric.metric("매도 신호", f"{len(df_all[df_all['상태'].str.contains('매도')])}개")
                 
-                # 실시간 테이블 업데이트
                 with main_result_area:
                     show_styled_dataframe(df_all)
             progress_bar.progress((i + 1) / len(market_df))
         st.success("✅ 분석 완료!")
 
-# 분석 후 필터링 적용 출력
 if 'df_all' in st.session_state:
     df = st.session_state['df_all']
     display_df = df.copy()
@@ -173,8 +170,7 @@ if 'df_all' in st.session_state:
     
     with main_result_area:
         show_styled_dataframe(display_df)
-
-    # Outlook 버튼 상시 노출 (데이터 있을 때만 활성화되는 링크)
+        
     email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
     encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
     mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
@@ -182,3 +178,5 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
+
