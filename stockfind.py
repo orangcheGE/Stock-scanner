@@ -199,10 +199,6 @@ def analyze_stock(code, name, current_change):
     except:
         return None
 
-
-# =======================================================================
-
-
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
@@ -296,4 +292,3 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
-
