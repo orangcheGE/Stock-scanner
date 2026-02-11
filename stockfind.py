@@ -45,7 +45,7 @@ def get_market_sum_pages(page_list, market="KOSPI"):
     return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률': changes})
 
 def get_price_data(code, max_pages=15):
-    url = f"https://finance.naver.com/item/fchart.naver?code={code}"
+    url = f"https://finance.naver.com/item/sise_day.naver?code={code}"
     dfs = []
     for page in range(1, max_pages+1):
         try:
@@ -65,139 +65,29 @@ def get_price_data(code, max_pages=15):
 def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
-        if df is None or len(df) < 60:
-            return None
-
-        # ===============================
-        # 20일선
-        # ===============================
+        if df is None or len(df) < 40: return None
         df['20MA'] = df['종가'].rolling(20).mean()
-
-        # ===============================
-        # MACD 계산
-        # ===============================
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
-        macd = ema12 - ema26
-        signal = macd.ewm(span=9, adjust=False).mean()
-        df['MACD_hist'] = macd - signal
-
-        # ===============================
-        # CCI 계산 (20 period)
-        # ===============================
-        tp = (df['고가'] + df['저가'] + df['종가']) / 3
-        sma_tp = tp.rolling(20).mean()
-        mad = tp.rolling(20).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
-        df['CCI'] = (tp - sma_tp) / (0.015 * mad)
-
-        last = df.iloc[-1]
-        price = last['종가']
-        ma20 = last['20MA']
-
-        # ===============================
-        # 최근 5일 돌파 검사
-        # ===============================
-        recent = df.iloc[-6:]  # 이전일 포함 6일
-        macd_hist = recent['MACD_hist']
-        cci_vals = recent['CCI']
-
-        # ----- MACD 상향/하향 돌파 -----
-        macd_cross_up = False
-        macd_cross_down = False
-
-        for i in range(1, len(macd_hist)):
-            if macd_hist.iloc[i-1] < 0 and macd_hist.iloc[i] > 0:
-                macd_cross_up = True
-            if macd_hist.iloc[i-1] > 0 and macd_hist.iloc[i] < 0:
-                macd_cross_down = True
-
-        # ----- CCI 돌파 조건 -----
-        cci_cross_up = False
-        cci_cross_down = False
-        cci_signal_text = ""
-
-        for i in range(1, len(cci_vals)):
-            prev = cci_vals.iloc[i-1]
-            curr = cci_vals.iloc[i]
-
-            # CCI -100 → 상향 돌파 (= 단기 과매도 해소)
-            if prev < -100 and curr > -100:
-                cci_cross_up = True
-                cci_signal_text = "CCI -100 상향 돌파 (단기 과매도 해소)"
-
-            # CCI 50 → 상향 돌파 (= 초기 모멘텀 진입)
-            elif prev < 50 and curr > 50:
-                cci_cross_up = True
-                cci_signal_text = "CCI 50 상향 돌파 (초기 모멘텀 진입)"
-
-            # CCI 100 → 상향 돌파 (= 강한 상승 모멘텀)"
-            elif prev < 100 and curr > 100:
-                cci_cross_up = True
-                cci_signal_text = "CCI 100 상향 돌파 (강한 상승 모멘텀)"
-
-            # 반대 조건 (매도)
-            if prev > 100 and curr < 100:
-                cci_cross_down = True
-            elif prev > 50 and curr < 50:
-                cci_cross_down = True
-            elif prev > -100 and curr < -100:
-                cci_cross_down = True
-
-        # ===============================
-        # 20일선 조건
-        # ===============================
-        price_condition_up = (price >= ma20) or (abs(price - ma20) / ma20 < 0.03)
-        price_condition_down = price < ma20
-
-        # ===============================
-        # 최종 조건 (2조건 동시 충족)
-        # ===============================
-        buy_interest = price_condition_up and (macd_cross_up or cci_cross_up)
-        sell_signal = price_condition_down and (macd_cross_down or cci_cross_down)
-
-        # ===============================
-        # 상태 결정
-        # ===============================
-        if price > ma20 and macd_cross_up:
-            status = "추가 매수 가능"
-            trend = "20일선 상회 + MACD 0선 상향 돌파 (추세 강화)"
-
-        elif buy_interest:
-            status = "매수 관심"
-            if cci_cross_up:
-                trend = cci_signal_text
-            else:
-                trend = "MACD 0선 상향 돌파 (모멘텀 전환)"
-
-        elif sell_signal:
-            status = "적극 매도"
-            trend = "20일선 이탈 + 모멘텀 하향 돌파"
-
-        else:
-            status = "관망"
-            trend = "명확한 복합 신호 없음"
-
-        # ===============================
-        # 기타 계산
-        # ===============================
-        diff = price - ma20
-        disparity = ((price / ma20) - 1) * 100
+        df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
+        df['tr'] = np.maximum(df['고가'] - df['저가'], np.maximum(abs(df['고가'] - df['종가'].shift(1)), abs(df['저가'] - df['종가'].shift(1))))
+        df['ATR'] = df['tr'].rolling(14).mean()
+        last, prev = df.iloc[-1], df.iloc[-2]
+        price, ma20, macd_last, macd_prev = last['종가'], last['20MA'], last['MACD_hist'], prev['MACD_hist']
+        diff, disparity = price - ma20, ((price / ma20) - 1) * 100
         disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
+        sl_tp = f"{int(price - last['ATR']*2)} / {int(price + last['ATR']*2)}" if pd.notna(last['ATR']) else "- / -"
+
+        if price > ma20 and macd_last > 0:
+            status, trend = ("추가 매수 가능", "🚀 상승세 안정적 (추가 여력)") if 0 <= disparity <= 3 else ("홀드", "📈 상승 추세 유지")
+        elif (prev['종가'] < prev['20MA']) and (price > ma20): status, trend = "적극 매수", "🔥 엔진 점화"
+        elif abs(price - ma20)/ma20 < 0.03 and macd_last > 0: status, trend = "매수 관심", "⚓ 반등 준비"
+        elif price < ma20 and macd_last < macd_prev: status, trend = "적극 매도", "🧊 추세 하락"
+        else: status, trend = "관망", "🌊 방향 탐색"
 
         chart_url = f"https://finance.naver.com/item/main.naver?code={code}"
-
-        return [
-            code, name, current_change,
-            int(price), int(ma20), int(diff),
-            disparity_fmt,
-            "-",
-            status,
-            trend,
-            chart_url
-        ]
-
-    except:
-        return None
+        return [code, name, current_change, int(price), int(ma20), int(diff), disparity_fmt, sl_tp, status, f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}", chart_url]
+    except: return None
 
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
@@ -292,4 +182,3 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
-
