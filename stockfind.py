@@ -65,33 +65,90 @@ def get_price_data(code, max_pages=15):
 def analyze_stock(code, name, current_change):
     try:
         df = get_price_data(code)
-        if df is None or len(df) < 40: return None
         
+        # 1. 데이터 유효성 검사 (20MA, MACD(26), 5일 추세 분석을 위해 최소 35일 데이터 권장)
+        if df is None or len(df) < 35: 
+            return None
+
+        # --- 지표 계산 ---
         df['20MA'] = df['종가'].rolling(20).mean()
-        
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
-        df['MACD_hist'] = (ema12 - ema26) - (ema12 - ema26).ewm(span=9, adjust=False).mean()
+        df['MACD'] = ema12 - ema26
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['MACD_hist'] = df['MACD'] - df['MACD_Signal']
+        
+        # 지표 계산 후 발생한 NaN 데이터 제거
+        df.dropna(inplace=True)
+        if len(df) < 6: # 5일치 추세 비교를 위해 최소 6일의 데이터 필요
+             return None
 
-        last, prev = df.iloc[-1], df.iloc[-2]
-        price, ma20, macd_last, macd_prev = last['종가'], last['20MA'], last['MACD_hist'], prev['MACD_hist']
+        # --- 분석을 위한 데이터 준비 ---
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
         
-        disparity = ((price / ma20) - 1) * 100
-        disparity_fmt = f"{'+' if disparity > 0 else ''}{round(disparity, 2)}%"
+        price = last['종가']
+        ma20 = last['20MA']
+        macd_hist_last = last['MACD_hist']
+        macd_hist_prev = prev['MACD_hist']
+
+        prev_price = prev['종가']
+        prev_ma20 = prev['20MA']
         
-        if price > ma20 and macd_last > 0:
-            status, trend = ("추가 매수 가능", "🚀 상승세 안정적 (추가 여력)") if 0 <= disparity <= 3 else ("홀드", "📈 상승 추세 유지")
-        elif (prev['종가'] < prev['20MA']) and (price > ma20): status, trend = "적극 매수", "🔥 엔진 점화"
-        elif abs(price - ma20)/ma20 < 0.03 and macd_last > 0: status, trend = "매수 관심", "⚓ 반등 준비"
-        elif price < ma20 and macd_last < macd_prev: status, trend = "적극 매도", "🧊 추세 하락"
-        else: status, trend = "관망", "🌊 방향 탐색"
-            
+        # 이격률 계산
+        disparity = ((price / ma20) - 1) * 100 if ma20 > 0 else 0
+        disparity_fmt = f"{'+' if disparity >= 0 else ''}{round(disparity, 2)}%"
+
+        # --- 새로운 분석 로직 ---
+        status, trend = "관망", "🌊 방향 탐색" # 기본값 설정
+
+        # 5일간 MACD 히스토그램 추세 분석 (최근 5일 중 3일 이상 상승/하락했는지)
+        macd_5d_diff = np.diff(df['MACD_hist'].tail(5))
+        is_macd_rebounding = sum(macd_5d_diff > 0) >= 3
+        is_macd_declining = sum(macd_5d_diff < 0) >= 3
+
+        # --- 조건 평가 (우선순위가 높은 순서대로) ---
+
+        # 1. '적극 매수' (Strong Buy)
+        #    - MACD 히스토그램이 0을 상향 돌파했거나, 주가가 20MA를 골든 크로스한 경우
+        if (macd_hist_last > 0 and macd_hist_prev <= 0) or \
+           (price > ma20 and prev_price < prev_ma20):
+            status, trend = "적극 매수", "🔥 엔진 점화 (강력 매수 신호)"
+
+        # 2. '적극 매도' (Strong Sell)
+        #    - MACD 히스토그램이 0을 하향 돌파했거나, 주가가 20MA를 데드 크로스한 경우
+        elif (macd_hist_last < 0 and macd_hist_prev >= 0) or \
+             (price < ma20 and prev_price > prev_ma20):
+            status, trend = "적극 매도", "📉 추세 하락 전환"
+        
+        # 3. '매수 관심' (Buy Interest)
+        #    - MACD 히스토그램이 음수(-) 영역에 있고, 지난 5일간 상승 전환 추세이며,
+        #    - 주가가 20MA를 향해 아래에서 접근하는 경우
+        elif macd_hist_last < 0 and is_macd_rebounding and price < ma20:
+             status, trend = "매수 관심", "⚓️ 반등 준비 중"
+        
+        # 4. '매도 관심' (Sell Interest)
+        #    - MACD 히스토그램이 양수(+) 영역에 있고, 지난 5일간 하락 전환 추세이며,
+        #    - 주가가 20MA를 향해 위에서 접근하는 경우
+        elif macd_hist_last > 0 and is_macd_declining and price > ma20:
+            status, trend = "매도 관심", "⚠️ 상승 탄력 둔화"
+
+        # 5. 기타 추세 지속 구간
+        elif price > ma20: # 20MA 위에 있을 때
+            status, trend = "홀드", "📈 상승 추세 유지"
+        elif price < ma20: # 20MA 아래에 있을 때
+            status, trend = "관망", "🧊 하락 또는 횡보"
+
+        # 최종 추세 가속/감속 판단
+        macd_trend_status = '📈 가속' if macd_hist_last > macd_hist_prev else '⚠️ 감속'
+        
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
         
-        # '20MA', '차이', '손절/익절' 항목 제거 후 반환
-        return [code, name, current_change, int(price), disparity_fmt, status, f"{trend} | {'📈 가속' if macd_last > macd_prev else '⚠️ 감속'}", chart_url]
+        return [code, name, current_change, int(price), disparity_fmt, status, f"{trend} | {macd_trend_status}", chart_url]
     
-    except: return None
+    except Exception:
+        # 오류 발생 시 해당 종목은 건너뜁니다.
+        return None
 
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
@@ -178,5 +235,6 @@ if 'df_all' in st.session_state:
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
 
 
