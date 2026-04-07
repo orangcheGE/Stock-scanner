@@ -236,10 +236,6 @@ else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요")
 
-# 기존 코드
-print(type(df_all))  # df_all의 타입을 출력하여 확인
-print(df_all.head()) # df_all의 상위 5개 행을 출력하여 데이터 확인
-show_styled_dataframe(df_all)
 
 
 
