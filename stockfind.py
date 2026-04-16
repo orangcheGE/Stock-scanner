@@ -163,6 +163,7 @@ def analyze_stock(code, name, current_change):
         return None
 
 # [수정] 컬럼명 변경 및 스타일링 함수 이름 변경
+# [수정] '등률' -> '등락률' 오타를 수정한 함수
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
@@ -186,7 +187,8 @@ def show_styled_dataframe(dataframe):
     st.dataframe(
         dataframe.style
         .map(lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''), subset=['상태'])
-        .map(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등률', '이격률'])
+        # [핵심 수정] '등률'을 '등락률'로 바로잡았습니다.
+        .map(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등락률', '이격률'])
         .apply(style_ichimoku_column, subset=['일목(일봉)', '일목(주봉)']),
         use_container_width=True,
         height=dynamic_height,
