@@ -9,18 +9,14 @@ import io
 import urllib.parse
 from datetime import datetime
 
-# 1. 페이지 설정
-st.set_page_config(page_title="20일선 스마트 대시보드", layout="wide")
-
+# (get_headers, get_market_sum_pages, get_price_data 함수는 이전과 동일)
 def get_headers():
     return {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://finance.naver.com/'
     }
 
-# --- 분석 로직 ---
 def get_market_sum_pages(page_list, market="KOSPI"):
-    # (기존과 동일)
     sosok = 0 if market == "KOSPI" else 1
     codes, names, changes = [], [], []
     for page in page_list:
@@ -45,7 +41,6 @@ def get_market_sum_pages(page_list, market="KOSPI"):
         except: continue
     return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률': changes})
 
-# [수정] 주봉 분석을 위해 기본 max_pages를 25로 늘림
 def get_price_data(code, max_pages=25):
     url = f"https://finance.naver.com/item/sise_day.naver?code={code}"
     dfs = []
@@ -64,34 +59,26 @@ def get_price_data(code, max_pages=25):
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
-# [수정] timeframe 파라미터 추가 및 볼린저 밴드 로직 통합
+
+# [수정] 볼린저 밴드 상태를 별도 항목으로 반환하도록 수정
 def analyze_stock(code, name, current_change, timeframe='일봉'):
     try:
         df_daily = get_price_data(code)
 
         if timeframe == '주봉':
-            # 주봉 데이터로 변환
             df_daily = df_daily.set_index('날짜')
-            df = df_daily.resample('W').agg({
-                '종가': 'last',
-                '고가': 'max',
-                '저가': 'min',
-                '거래량': 'sum'
-            }).reset_index()
-            # 주봉 데이터가 35개 미만이면 분석에서 제외
+            df = df_daily.resample('W').agg({'종가': 'last', '고가': 'max', '저가': 'min', '거래량': 'sum'}).reset_index()
             if df is None or len(df) < 35: return None
         else:
             df = df_daily
-            # 일봉 데이터가 35개 미만이면 분석에서 제외
             if df is None or len(df) < 35: return None
 
-        # --- 지표 계산 ---
         df['20MA'] = df['종가'].rolling(20).mean()
-        # [추가] 볼린저 밴드 계산
         df['20STD'] = df['종가'].rolling(20).std()
         df['UpperBand'] = df['20MA'] + (df['20STD'] * 2)
         df['LowerBand'] = df['20MA'] - (df['20STD'] * 2)
-
+        
+        # (MACD 등 기타 지표 계산은 동일)
         ema12 = df['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df['종가'].ewm(span=26, adjust=False).mean()
         df['MACD'] = ema12 - ema26
@@ -101,33 +88,25 @@ def analyze_stock(code, name, current_change, timeframe='일봉'):
         df.dropna(inplace=True)
         if len(df) < 6: return None
 
-        # --- 분석을 위한 데이터 준비 ---
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
         price = last['종가']
-        ma20 = last['20MA']
         upper_band = last['UpperBand']
         lower_band = last['LowerBand']
 
-        # [추가] 볼린저 밴드 상태 판단
-        bollinger_status = ""
+        # [수정] 볼린저 밴드 상태를 독립된 텍스트로 생성
+        bollinger_status = "🌊 밴드 내"
         if price > upper_band:
-            bollinger_status = " (🔥BB상단돌파)"
+            bollinger_status = "🔥 상단 돌파"
         elif price < lower_band:
-            bollinger_status = " (💧BB하단이탈)"
-
-        # --- 기존 분석 로직 ---
+            bollinger_status = "💧 하단 이탈"
+            
+        # (기존 상태 분석 로직은 동일)
         status, trend = "관망", "🌊 방향 탐색"
-        # ... (생략) ...
-        macd_hist_last = last['MACD_hist']
-        macd_hist_prev = prev['MACD_hist']
-        prev_price = prev['종가']
-        prev_ma20 = prev['20MA']
-        
+        ma20, macd_hist_last, macd_hist_prev, prev_price, prev_ma20 = last['20MA'], last['MACD_hist'], prev['MACD_hist'], prev['종가'], prev['20MA']
         disparity = ((price / ma20) - 1) * 100 if ma20 > 0 else 0
         disparity_fmt = f"{'+' if disparity >= 0 else ''}{round(disparity, 2)}%"
-        
         macd_5d_diff = np.diff(df['MACD_hist'].tail(5))
         is_macd_rebounding = sum(macd_5d_diff > 0) >= 3
         is_macd_declining = sum(macd_5d_diff < 0) >= 3
@@ -144,45 +123,41 @@ def analyze_stock(code, name, current_change, timeframe='일봉'):
             status, trend = "홀드", "📈 상승 유지"
         elif price < ma20:
             status, trend = "관망", "🧊 하락/횡보"
-            
+        
         macd_trend_status = '📈 가속' if macd_hist_last > macd_hist_prev else '⚠️ 감속'
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
-
-        # [수정] 상태 텍스트에 볼린저 밴드 상태 결합
-        status_text = f"{status}{bollinger_status}"
-
-        # [수정] 반환 리스트에서 볼린저 밴드 상태 제거
-        return [code, name, current_change, int(price), disparity_fmt, status_text, f"{trend} | {macd_trend_status}", chart_url]
+        
+        # [수정] 반환 리스트에 'bollinger_status'를 별도 항목으로 추가
+        return [code, name, current_change, int(price), disparity_fmt, status, bollinger_status, f"{trend} | {macd_trend_status}", chart_url]
+    
     except Exception:
         return None
 
+# [수정] 'BB 위치' 컬럼에 대한 스타일링 추가
 def show_styled_dataframe(dataframe):
-    # (기존과 동일)
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
         return
+        
     st.dataframe(
         dataframe.style.map(lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''), subset=['상태'])
-        .map(lambda x: 'background-color: #ffcdd2' if 'BB상단돌파' in str(x) else ('background-color: #bbdefb' if 'BB하단이탈' in str(x) else ''), subset=['상태'])
-        .map(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등락률', '이격률']),
+        .map(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등락률', '이격률'])
+        .map(lambda x: 'color: white; background-color: #d32f2f; font-weight: bold;' if '돌파' in str(x) else ('color: white; background-color: #1976d2; font-weight: bold;' if '이탈' in str(x) else ''), subset=['BB 위치']),
         use_container_width=True,
         column_config={"차트": st.column_config.LinkColumn("차트", display_text="열기"), "코드": st.column_config.TextColumn("코드", width="small")},
         hide_index=True
     )
 
-# -------------------------
-# UI 부분
-# -------------------------
+# --- UI 부분 ---
 st.title("🛡️ 20일선 스마트 데이터 스캐너")
 st.sidebar.header("설정")
 
 market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
-# [추가] 일봉/주봉 선택 UI
 timeframe = st.sidebar.radio("분석 기준", ["일봉", "주봉"])
 selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
 start_btn = st.sidebar.button("🚀 분석 시작")
 
-# (이하 UI 로직은 기존과 거의 동일)
+# (중간 UI 부분은 동일)
 st.subheader("📊 진단 및 필터링")
 c1, c2, c3 = st.columns(3)
 total_metric = c1.empty()
@@ -191,7 +166,6 @@ sell_metric = c3.empty()
 total_metric.metric("전체 종목", "0개")
 buy_metric.metric("매수 신호", "0개")
 sell_metric.metric("매도 신호", "0개")
-
 col1, col2, col3 = st.columns(3)
 if 'filter' not in st.session_state: st.session_state.filter = "전체"
 btn_all = col1.button("🔄 전체 보기", use_container_width=True)
@@ -205,18 +179,18 @@ result_title = st.empty()
 result_title.subheader(f"🔍 {timeframe} 기준 결과 리스트 ({st.session_state.filter})")
 main_result_area = st.empty()
 
+
 if start_btn:
     market_df = get_market_sum_pages(selected_pages, market)
     if not market_df.empty:
         results = []
         progress_bar = st.progress(0)
         for i, (idx, row) in enumerate(market_df.iterrows()):
-            # [수정] 선택된 timeframe을 분석 함수에 전달
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'], timeframe)
             if res:
                 results.append(res)
-                # [수정] 컬럼명 리스트 업데이트
-                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '이격률', '상태', '해석', '차트'])
+                # [수정] 컬럼 리스트에 'BB 위치' 추가
+                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '이격률', '상태', 'BB 위치', '해석', '차트'])
                 st.session_state['df_all'] = df_all
                 
                 total_metric.metric("전체 종목", f"{len(df_all)}개")
@@ -228,6 +202,7 @@ if start_btn:
             progress_bar.progress((i + 1) / len(market_df))
         st.success("✅ 분석 완료!")
 
+# (나머지 부분은 동일)
 if 'df_all' in st.session_state:
     df = st.session_state['df_all']
     display_df = df.copy()
@@ -237,11 +212,11 @@ if 'df_all' in st.session_state:
     with main_result_area:
         show_styled_dataframe(display_df)
         
-    email_summary = display_df[['종목명', '현재가', '상태']].to_string(index=False)
+    email_summary = display_df[['종목명', '현재가', '상태', 'BB 위치']].to_string(index=False)
     encoded_body = urllib.parse.quote(f"주식 분석 리포트 ({timeframe} 기준)\n\n{email_summary}")
     mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
     st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
-
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요")
+
