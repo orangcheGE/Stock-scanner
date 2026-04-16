@@ -59,55 +59,72 @@ def get_price_data(code, max_pages=25):
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
-
-# [수정] 볼린저 밴드 상태를 별도 항목으로 반환하도록 수정
-def analyze_stock(code, name, current_change, timeframe='일봉'):
+# [핵심 수정] 일봉/주봉 BB 상태를 모두 계산하고, 밴드 내 추세까지 분석
+def analyze_stock(code, name, current_change):
     try:
         df_daily = get_price_data(code)
+        if df_daily is None or len(df_daily) < 35:
+            return None
 
-        if timeframe == '주봉':
-            df_daily = df_daily.set_index('날짜')
-            df = df_daily.resample('W').agg({'종가': 'last', '고가': 'max', '저가': 'min', '거래량': 'sum'}).reset_index()
-            if df is None or len(df) < 35: return None
-        else:
-            df = df_daily
-            if df is None or len(df) < 35: return None
+        # --- 볼린저 밴드 분석 함수 ---
+        def get_bollinger_status(df):
+            if len(df) < 21: # 최소 21일(주) 데이터 필요
+                return "- (데이터 부족)"
 
-        df['20MA'] = df['종가'].rolling(20).mean()
-        df['20STD'] = df['종가'].rolling(20).std()
-        df['UpperBand'] = df['20MA'] + (df['20STD'] * 2)
-        df['LowerBand'] = df['20MA'] - (df['20STD'] * 2)
+            df_bb = df.copy()
+            df_bb['20MA'] = df_bb['종가'].rolling(20).mean()
+            df_bb['20STD'] = df_bb['종가'].rolling(20).std()
+            df_bb['UpperBand'] = df_bb['20MA'] + (df_bb['20STD'] * 2)
+            df_bb['LowerBand'] = df_bb['20MA'] - (df_bb['20STD'] * 2)
+            df_bb.dropna(inplace=True)
+
+            if len(df_bb) < 2:
+                return "- (계산 불가)"
+
+            last = df_bb.iloc[-1]
+            prev = df_bb.iloc[-2]
+            price = last['종가']
+
+            if price > last['UpperBand']:
+                return "🔥 상단 돌파"
+            elif price < last['LowerBand']:
+                return "💧 하단 이탈"
+            else:
+                if price > prev['종가']:
+                    return "🌊 밴드 내 (🔼 상승)"
+                elif price < prev['종가']:
+                    return "🌊 밴드 내 (🔽 하락)"
+                else:
+                    return "🌊 밴드 내 (횡보)"
+
+        # 1. 일봉 기준 BB 상태 분석
+        bb_status_daily = get_bollinger_status(df_daily)
+
+        # 2. 주봉 기준 BB 상태 분석
+        df_weekly = df_daily.set_index('날짜').resample('W-Fri').agg(
+            {'종가': 'last', '고가': 'max', '저가': 'min', '거래량': 'sum'}
+        ).reset_index()
+        bb_status_weekly = get_bollinger_status(df_weekly)
+
+        # 3. 일봉 기준 MACD 상태 분석 (기존 로직)
+        df_daily['20MA'] = df_daily['종가'].rolling(20).mean()
+        ema12 = df_daily['종가'].ewm(span=12, adjust=False).mean()
+        ema26 = df_daily['종가'].ewm(span=26, adjust=False).mean()
+        df_daily['MACD'] = ema12 - ema26
+        df_daily['MACD_Signal'] = df_daily['MACD'].ewm(span=9, adjust=False).mean()
+        df_daily['MACD_hist'] = df_daily['MACD'] - df_daily['MACD_Signal']
+        df_daily.dropna(inplace=True)
+
+        if len(df_daily) < 6: return None
+
+        last = df_daily.iloc[-1]
+        prev = df_daily.iloc[-2]
         
-        # (MACD 등 기타 지표 계산은 동일)
-        ema12 = df['종가'].ewm(span=12, adjust=False).mean()
-        ema26 = df['종가'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = ema12 - ema26
-        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        df['MACD_hist'] = df['MACD'] - df['MACD_Signal']
-
-        df.dropna(inplace=True)
-        if len(df) < 6: return None
-
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        price = last['종가']
-        upper_band = last['UpperBand']
-        lower_band = last['LowerBand']
-
-        # [수정] 볼린저 밴드 상태를 독립된 텍스트로 생성
-        bollinger_status = "🌊 밴드 내"
-        if price > upper_band:
-            bollinger_status = "🔥 상단 돌파"
-        elif price < lower_band:
-            bollinger_status = "💧 하단 이탈"
-            
-        # (기존 상태 분석 로직은 동일)
         status, trend = "관망", "🌊 방향 탐색"
-        ma20, macd_hist_last, macd_hist_prev, prev_price, prev_ma20 = last['20MA'], last['MACD_hist'], prev['MACD_hist'], prev['종가'], prev['20MA']
+        price, ma20, macd_hist_last, macd_hist_prev, prev_price, prev_ma20 = last['종가'], last['20MA'], last['MACD_hist'], prev['MACD_hist'], prev['종가'], prev['20MA']
         disparity = ((price / ma20) - 1) * 100 if ma20 > 0 else 0
         disparity_fmt = f"{'+' if disparity >= 0 else ''}{round(disparity, 2)}%"
-        macd_5d_diff = np.diff(df['MACD_hist'].tail(5))
+        macd_5d_diff = np.diff(df_daily['MACD_hist'].tail(5))
         is_macd_rebounding = sum(macd_5d_diff > 0) >= 3
         is_macd_declining = sum(macd_5d_diff < 0) >= 3
 
@@ -123,41 +140,53 @@ def analyze_stock(code, name, current_change, timeframe='일봉'):
             status, trend = "홀드", "📈 상승 유지"
         elif price < ma20:
             status, trend = "관망", "🧊 하락/횡보"
-        
+            
         macd_trend_status = '📈 가속' if macd_hist_last > macd_hist_prev else '⚠️ 감속'
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
-        
-        # [수정] 반환 리스트에 'bollinger_status'를 별도 항목으로 추가
-        return [code, name, current_change, int(price), disparity_fmt, status, bollinger_status, f"{trend} | {macd_trend_status}", chart_url]
-    
+
+        return [code, name, current_change, int(price), disparity_fmt, status, bb_status_daily, bb_status_weekly, f"{trend} | {macd_trend_status}", chart_url]
     except Exception:
         return None
 
-# [수정] 'BB 위치' 컬럼에 대한 스타일링 추가
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
         return
-        
+
+    def style_bb_column(series):
+        styles = []
+        for x in series:
+            if '돌파' in str(x):
+                styles.append('color: white; background-color: #d32f2f; font-weight: bold;')
+            elif '이탈' in str(x):
+                styles.append('color: white; background-color: #1976d2; font-weight: bold;')
+            elif '🔼' in str(x):
+                styles.append('color: #d32f2f;') # 빨간색 텍스트
+            elif '🔽' in str(x):
+                styles.append('color: #1976d2;') # 파란색 텍스트
+            else:
+                styles.append('')
+        return styles
+
     st.dataframe(
-        dataframe.style.map(lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''), subset=['상태'])
+        dataframe.style
+        .map(lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''), subset=['상태'])
         .map(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등락률', '이격률'])
-        .map(lambda x: 'color: white; background-color: #d32f2f; font-weight: bold;' if '돌파' in str(x) else ('color: white; background-color: #1976d2; font-weight: bold;' if '이탈' in str(x) else ''), subset=['BB 위치']),
+        .apply(style_bb_column, subset=['BB (일봉)', 'BB (주봉)']),
         use_container_width=True,
         column_config={"차트": st.column_config.LinkColumn("차트", display_text="열기"), "코드": st.column_config.TextColumn("코드", width="small")},
         hide_index=True
     )
 
 # --- UI 부분 ---
-st.title("🛡️ 20일선 스마트 데이터 스캐너")
+st.title("🛡️ 스마트 데이터 스캐너")
 st.sidebar.header("설정")
 
 market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
-timeframe = st.sidebar.radio("분석 기준", ["일봉", "주봉"])
+# [제거] 일봉/주봉 선택 UI 제거
 selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
 start_btn = st.sidebar.button("🚀 분석 시작")
 
-# (중간 UI 부분은 동일)
 st.subheader("📊 진단 및 필터링")
 c1, c2, c3 = st.columns(3)
 total_metric = c1.empty()
@@ -166,6 +195,7 @@ sell_metric = c3.empty()
 total_metric.metric("전체 종목", "0개")
 buy_metric.metric("매수 신호", "0개")
 sell_metric.metric("매도 신호", "0개")
+
 col1, col2, col3 = st.columns(3)
 if 'filter' not in st.session_state: st.session_state.filter = "전체"
 btn_all = col1.button("🔄 전체 보기", use_container_width=True)
@@ -176,9 +206,9 @@ if btn_buy: st.session_state.filter = "매수"
 if btn_sell: st.session_state.filter = "매도"
 st.markdown("---")
 result_title = st.empty()
-result_title.subheader(f"🔍 {timeframe} 기준 결과 리스트 ({st.session_state.filter})")
+# [수정] 결과 리스트 제목 변경
+result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter})")
 main_result_area = st.empty()
-
 
 if start_btn:
     market_df = get_market_sum_pages(selected_pages, market)
@@ -186,11 +216,12 @@ if start_btn:
         results = []
         progress_bar = st.progress(0)
         for i, (idx, row) in enumerate(market_df.iterrows()):
-            res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'], timeframe)
+            # [수정] timeframe 파라미터 없이 호출
+            res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
             if res:
                 results.append(res)
-                # [수정] 컬럼 리스트에 'BB 위치' 추가
-                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '이격률', '상태', 'BB 위치', '해석', '차트'])
+                # [수정] 컬럼명 리스트에 'BB (일봉)', 'BB (주봉)' 추가
+                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '이격률', '상태', 'BB (일봉)', 'BB (주봉)', '해석', '차트'])
                 st.session_state['df_all'] = df_all
                 
                 total_metric.metric("전체 종목", f"{len(df_all)}개")
@@ -202,7 +233,6 @@ if start_btn:
             progress_bar.progress((i + 1) / len(market_df))
         st.success("✅ 분석 완료!")
 
-# (나머지 부분은 동일)
 if 'df_all' in st.session_state:
     df = st.session_state['df_all']
     display_df = df.copy()
@@ -211,12 +241,12 @@ if 'df_all' in st.session_state:
     
     with main_result_area:
         show_styled_dataframe(display_df)
-        
-    email_summary = display_df[['종목명', '현재가', '상태', 'BB 위치']].to_string(index=False)
-    encoded_body = urllib.parse.quote(f"주식 분석 리포트 ({timeframe} 기준)\n\n{email_summary}")
+    
+    # [수정] 메일 본문에 BB 컬럼 추가
+    email_summary = display_df[['종목명', '현재가', '상태', 'BB (일봉)', 'BB (주봉)']].to_string(index=False)
+    encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
     mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
     st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
 else:
     with main_result_area:
         st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요")
-
