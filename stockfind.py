@@ -153,20 +153,27 @@ def analyze_stock(code, name, current_change):
         return None
 
 # [수정] '등률' -> '등락률' 오타를 수정한 함수
-# [최종 수정] 존재하지 않는 '일목(주봉)' 컬럼 참조 오류를 수정한 함수
+# [최종 수정] .applymap을 .map으로 변경하여 AttributeError를 해결한 함수
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
         return
 
-    # 'MA 크로스' 컬럼에 대한 스타일링 함수
+    # 'MA 크로스' 컬럼의 각 셀에 대한 스타일링 함수
     def style_ma_crossover(val):
         color = '#757575' # 기본 회색
-        if '🔥' in val: color = '#d32f2f' # 빨간색
-        elif '🧊' in val: color = '#1976d2' # 파란색
-        elif '📈' in val: color = '#e57373' # 옅은 빨간색
-        elif '📉' in val: color = '#64b5f6' # 옅은 파란색
-        return f'color: {color}'
+        font_weight = 'normal'
+        if '🔥' in val:
+            color = '#d32f2f' # 빨간색
+            font_weight = 'bold'
+        elif '🧊' in val:
+            color = '#1976d2' # 파란색
+            font_weight = 'bold'
+        elif '📈' in val:
+            color = '#ef5350' # 옅은 빨간색
+        elif '📉' in val:
+            color = '#64b5f6' # 옅은 파란색
+        return f'color: {color}; font-weight: {font_weight};'
 
     dynamic_height = (len(dataframe) + 1) * 35 + 3
 
@@ -174,10 +181,9 @@ def show_styled_dataframe(dataframe):
         dataframe.style
         .map(lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''), subset=['상태'])
         .map(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등락률', '이격률'])
-        # [핵심 수정] '일목(주봉)'을 제거하고, '일목(일봉)'에만 스타일 적용
         .map(lambda x: 'color: #d32f2f; font-weight: bold;' if '위' in str(x) else ('color: #1976d2; font-weight: bold;' if '아래' in str(x) else 'color: #757575;'), subset=['일목(일봉)'])
-        # [추가] 'MA 크로스' 컬럼에 새로운 스타일 적용
-        .applymap(style_ma_crossover, subset=['MA 크로스']),
+        # [핵심 수정] .applymap을 올바른 함수인 .map으로 변경했습니다.
+        .map(style_ma_crossover, subset=['MA 크로스']),
         use_container_width=True,
         height=dynamic_height,
         column_config={
