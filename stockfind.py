@@ -153,35 +153,38 @@ def analyze_stock(code, name, current_change):
         return None
 
 # [수정] '등률' -> '등락률' 오타를 수정한 함수
+# [최종 수정] 존재하지 않는 '일목(주봉)' 컬럼 참조 오류를 수정한 함수
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
         return
 
-    def style_ichimoku_column(series):
-        styles = []
-        for x in series:
-            if '돌파' in str(x) or '위' in str(x):
-                styles.append('color: #d32f2f; font-weight: bold;') # 빨간색
-            elif '이탈' in str(x) or '아래' in str(x):
-                styles.append('color: #1976d2; font-weight: bold;') # 파란색
-            elif '진입' in str(x):
-                 styles.append('color: #757575;') # 회색
-            else:
-                styles.append('')
-        return styles
-    
+    # 'MA 크로스' 컬럼에 대한 스타일링 함수
+    def style_ma_crossover(val):
+        color = '#757575' # 기본 회색
+        if '🔥' in val: color = '#d32f2f' # 빨간색
+        elif '🧊' in val: color = '#1976d2' # 파란색
+        elif '📈' in val: color = '#e57373' # 옅은 빨간색
+        elif '📉' in val: color = '#64b5f6' # 옅은 파란색
+        return f'color: {color}'
+
     dynamic_height = (len(dataframe) + 1) * 35 + 3
 
     st.dataframe(
         dataframe.style
         .map(lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''), subset=['상태'])
-        # [핵심 수정] '등률'을 '등락률'로 바로잡았습니다.
         .map(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등락률', '이격률'])
-        .apply(style_ichimoku_column, subset=['일목(일봉)', '일목(주봉)']),
+        # [핵심 수정] '일목(주봉)'을 제거하고, '일목(일봉)'에만 스타일 적용
+        .map(lambda x: 'color: #d32f2f; font-weight: bold;' if '위' in str(x) else ('color: #1976d2; font-weight: bold;' if '아래' in str(x) else 'color: #757575;'), subset=['일목(일봉)'])
+        # [추가] 'MA 크로스' 컬럼에 새로운 스타일 적용
+        .applymap(style_ma_crossover, subset=['MA 크로스']),
         use_container_width=True,
         height=dynamic_height,
-        column_config={"차트": st.column_config.LinkColumn("차트", display_text="열기"), "코드": st.column_config.TextColumn("코드", width="small")},
+        column_config={
+            "차트": st.column_config.LinkColumn("차트", display_text="열기"),
+            "코드": st.column_config.TextColumn("코드", width="small"),
+            "MA 크로스": st.column_config.TextColumn("MA 크로스", width="large")
+        },
         hide_index=True
     )
 
