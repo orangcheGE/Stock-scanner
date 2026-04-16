@@ -60,120 +60,96 @@ def get_price_data(code, max_pages=30): # 데이터 충분히 가져오기
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
 # [최종 수정] 주봉 계산 오류를 바로잡은 analyze_stock 함수
+# [최종 수정] 이동평균선 '크로스오버' 상태 분석 기능으로 교체
 def analyze_stock(code, name, current_change):
     try:
-        df_daily = get_price_data(code, max_pages=40) # 2년치 가까운 데이터 확보
-        # 주봉 분석(52+26=78주)을 위해 최소 1.5년치 데이터 권장
-        if df_daily is None or len(df_daily) < 78:
+        df_daily = get_price_data(code, max_pages=15)
+        if df_daily is None or len(df_daily) < 70:
             return None
 
-        # --- 일목균형표 분석 함수 ---
-        def get_ichimoku_status(df_input):
-            df = df_input.copy()
-            
-            # 주봉/일봉에 따라 최소 데이터 길이 조건 설정
-            min_len = 78 if 'W' in str(df.index.freqstr) else 52
-            if len(df) < min_len:
-                return "- (데이터 부족)"
-
-            # 1. 지표 계산
-            high_9 = df['고가'].rolling(9).max()
-            low_9 = df['저가'].rolling(9).min()
-            df['tenkan_sen'] = (high_9 + low_9) / 2
-
-            high_26 = df['고가'].rolling(26).max()
-            low_26 = df['저가'].rolling(26).min()
-            df['kijun_sen'] = (high_26 + low_26) / 2
-
-            high_52 = df['고가'].rolling(52).max()
-            low_52 = df['저가'].rolling(52).min()
-            
-            # 2. 선행스팬 (미래 데이터). shift(25)를 사용 (26일 후의 값이므로)
-            df['senkou_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(25)
-            df['senkou_b'] = ((high_52 + low_52) / 2).shift(25)
-
-            # 3. [핵심 로직] 현재 주가와 그에 맞는 구름대 값을 정확히 매칭
-            # shift(25)를 했으므로, 현재 주가(price)에 대한 구름대는 26번째 이전 행에 있음
-            if len(df) < 26:
-                return "- (계산 불가)"
-
-            # 현재(가장 마지막) 주가
-            price = df['종가'].iloc[-1]
-            # 직전 주가
-            prev_price = df['종가'].iloc[-2]
-
-            # 현재 주가에 해당하는 구름대 (26행 이전의 값)
-            cloud_top = df['senkou_a'].iloc[-26]
-            cloud_bottom = df['senkou_b'].iloc[-26]
-
-            # 직전 주가에 해당하는 구름대 (27행 이전의 값)
-            prev_cloud_top = df['senkou_a'].iloc[-27]
-            prev_cloud_bottom = df['senkou_b'].iloc[-27]
-            
-            # NaN 값이 있는지 최종 확인
-            if pd.isna(price) or pd.isna(cloud_top) or pd.isna(cloud_bottom) or pd.isna(prev_price) or pd.isna(prev_cloud_top) or pd.isna(prev_cloud_bottom):
-                return "- (계산 불가)"
-
-            # 4. 위치 판단
-            if price > cloud_top:
-                if prev_price <= prev_cloud_top: return "☁️ 구름대 상향 돌파"
-                return "☀️ 구름대 위"
-            elif price < cloud_bottom:
-                if prev_price >= prev_cloud_bottom: return "⛈️ 구름대 하향 이탈"
-                return "💧 구름대 아래"
-            else:
-                return "🌫️ 구름대 진입"
-
-        # 1. 일봉 기준 분석
-        ichimoku_daily = get_ichimoku_status(df_daily.set_index('날짜'))
-
-        # 2. 주봉 기준 분석 (결측치 제거 로직 추가)
-        df_weekly = df_daily.set_index('날짜').resample('W-Fri').agg(
-            {'종가': 'last', '고가': 'max', '저가': 'min', '거래량': 'sum'}
-        ).dropna() # 데이터가 없는 주(week) 제거
-        ichimoku_weekly = get_ichimoku_status(df_weekly)
-
-        # 3. 일봉 기준 MACD 상태 분석 (기존 로직 유지)
+        # --- 1. 주요 이동평균선 계산 ---
+        df_daily['5MA'] = df_daily['종가'].rolling(5).mean()
         df_daily['20MA'] = df_daily['종가'].rolling(20).mean()
+        df_daily['60MA'] = df_daily['종가'].rolling(60).mean()
+
+        # --- 2. 일목균형표(일봉) 계산 ---
+        high_9 = df_daily['고가'].rolling(9).max()
+        low_9 = df_daily['저가'].rolling(9).min()
+        df_daily['tenkan_sen'] = (high_9 + low_9) / 2
+        high_26 = df_daily['고가'].rolling(26).max()
+        low_26 = df_daily['저가'].rolling(26).min()
+        df_daily['kijun_sen'] = (high_26 + low_26) / 2
+        df_daily['senkou_a'] = ((df_daily['tenkan_sen'] + df_daily['kijun_sen']) / 2).shift(25)
+        high_52 = df_daily['고가'].rolling(52).max()
+        low_52 = df_daily['저가'].rolling(52).min()
+        df_daily['senkou_b'] = ((high_52 + low_52) / 2).shift(25)
+
+        # --- MACD 계산 ---
         ema12 = df_daily['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df_daily['종가'].ewm(span=26, adjust=False).mean()
         df_daily['MACD'] = ema12 - ema26
         df_daily['MACD_Signal'] = df_daily['MACD'].ewm(span=9, adjust=False).mean()
         df_daily['MACD_hist'] = df_daily['MACD'] - df_daily['MACD_Signal']
+        
         df_daily.dropna(inplace=True)
-
-        if len(df_daily) < 6: return None
+        if len(df_daily) < 2: # 최소 2일치 데이터로 비교
+            return None
 
         last = df_daily.iloc[-1]
         prev = df_daily.iloc[-2]
-        
-        status, trend = "관망", "🌊 방향 탐색"
-        price, ma20, macd_hist_last, macd_hist_prev, prev_price, prev_ma20 = last['종가'], last['20MA'], last['MACD_hist'], prev['MACD_hist'], prev['종가'], prev['20MA']
-        disparity = ((price / ma20) - 1) * 100 if ma20 > 0 else 0
-        disparity_fmt = f"{'+' if disparity >= 0 else ''}{round(disparity, 2)}%"
-        macd_5d_diff = np.diff(df_daily['MACD_hist'].tail(5))
-        is_macd_rebounding = sum(macd_5d_diff > 0) >= 3
-        is_macd_declining = sum(macd_5d_diff < 0) >= 3
 
-        if (macd_hist_last > 0 and macd_hist_prev <= 0) or (price > ma20 and prev_price < prev_ma20):
-            status, trend = "적극 매수", "🔥 엔진 점화"
-        elif (macd_hist_last < 0 and macd_hist_prev >= 0) or (price < ma20 and prev_price > prev_ma20):
-            status, trend = "적극 매도", "📉 추세 하락"
-        elif macd_hist_last < 0 and is_macd_rebounding and price < ma20:
-             status, trend = "매수 관심", "⚓️ 반등 준비"
-        elif macd_hist_last > 0 and is_macd_declining and price > ma20:
-            status, trend = "매도 관심", "⚠️ 탄력 둔화"
-        elif price > ma20:
-            status, trend = "홀드", "📈 상승 유지"
-        elif price < ma20:
-            status, trend = "관망", "🧊 하락/횡보"
-            
-        macd_trend_status = '📈 가속' if macd_hist_last > macd_hist_prev else '⚠️ 감속'
+        # --- 3. [신규] 이동평균선 크로스오버 분석 함수 ---
+        def get_ma_crossover_status(last_row, prev_row, ma_col):
+            price_last = last_row['종가']
+            ma_last = last_row[ma_col]
+            price_prev = prev_row['종가']
+            ma_prev = prev_row[ma_col]
+
+            # 골든크로스
+            if price_last > ma_last and price_prev <= ma_prev:
+                return "🔥 골든크로스"
+            # 데드크로스
+            elif price_last < ma_last and price_prev >= ma_prev:
+                return "🧊 데드크로스"
+            # 상승 추세 유지
+            elif price_last > ma_last:
+                return "📈 상승 유지"
+            # 하락 추세 유지
+            else:
+                return "📉 하락 유지"
+
+        status_5ma = get_ma_crossover_status(last, prev, '5MA')
+        status_20ma = get_ma_crossover_status(last, prev, '20MA')
+        status_60ma = get_ma_crossover_status(last, prev, '60MA')
+        ma_crossover_text = f"5MA: {status_5ma} | 20MA: {status_20ma} | 60MA: {status_60ma}"
+        
+        # --- 4. 일목균형표(일봉) 상태 분석 ---
+        price = last['종가']
+        cloud_top = last['senkou_a']
+        cloud_bottom = last['senkou_b']
+        ichimoku_status = "🌫️ 구름대 진입"
+        if price > cloud_top: ichimoku_status = "☀️ 구름대 위"
+        elif price < cloud_bottom: ichimoku_status = "💧 구름대 아래"
+        
+        # --- 5. MACD 기반 매매 신호 분석 ---
+        status = "관망"
+        if (last['MACD_hist'] > 0 and prev['MACD_hist'] <= 0):
+            status = "적극 매수"
+        elif (last['MACD_hist'] < 0 and prev['MACD_hist'] >= 0):
+            status = "적극 매도"
+        elif status_20ma == "🔥 골든크로스":
+             status = "매수 관심"
+        elif status_20ma == "🧊 데드크로스":
+            status = "매도 관심"
+        elif price > last['20MA']:
+            status = "홀드"
+
+        disparity = ((price / last['20MA']) - 1) * 100 if last['20MA'] > 0 else 0
+        disparity_fmt = f"{'+' if disparity >= 0 else ''}{round(disparity, 2)}%"
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
 
-        return [code, name, current_change, int(price), disparity_fmt, status, ichimoku_daily, ichimoku_weekly, f"{trend} | {macd_trend_status}", chart_url]
+        return [code, name, current_change, int(price), disparity_fmt, status, ichimoku_status, ma_crossover_text, chart_url]
     except Exception:
-        # 오류 발생 시 None을 반환하여 해당 종목 건너뛰기
         return None
 
 # [수정] '등률' -> '등락률' 오타를 수정한 함수
@@ -246,8 +222,8 @@ if start_btn:
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
             if res:
                 results.append(res)
-                # [수정] 컬럼명 변경: 'BB' -> '일목'
-                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '이격률', '상태', '일목(일봉)', '일목(주봉)', '해석', '차트'])
+                # [수정] 컬럼명을 'MA 크로스'로 변경
+                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '이격률', '상태', '일목(일봉)', 'MA 크로스', '차트'])
                 st.session_state['df_all'] = df_all
                 # (이하 코드 생략)
                 total_metric.metric("전체 종목", f"{len(df_all)}개")
@@ -265,7 +241,7 @@ if 'df_all' in st.session_state:
     elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("매도")]
     with main_result_area:
         show_styled_dataframe(display_df)
-    email_summary = display_df[['종목명', '현재가', '상태', '일목(일봉)', '일목(주봉)']].to_string(index=False)
+    email_summary = display_df[['종목명', '현재가', '상태', '일목(일봉)', 'MA 크로스']].to_string(index=False)
     encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
     mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
     st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
