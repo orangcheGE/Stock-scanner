@@ -59,12 +59,11 @@ def get_price_data(code, max_pages=30): # 데이터 충분히 가져오기
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
-# [핵심 수정] 일목균형표 분석 로직으로 전면 교체
-# [핵심 수정] 주봉 데이터 계산 및 미래 데이터 정렬 로직을 완전히 새로 구현
+# [최종 수정] 주봉 계산 오류를 바로잡은 analyze_stock 함수
 def analyze_stock(code, name, current_change):
     try:
-        df_daily = get_price_data(code)
-        # 주봉 분석을 위해 최소 1.5년치 데이터(약 78주) 권장
+        df_daily = get_price_data(code, max_pages=40) # 2년치 가까운 데이터 확보
+        # 주봉 분석(52+26=78주)을 위해 최소 1.5년치 데이터 권장
         if df_daily is None or len(df_daily) < 78:
             return None
 
@@ -73,7 +72,7 @@ def analyze_stock(code, name, current_change):
             df = df_input.copy()
             
             # 주봉/일봉에 따라 최소 데이터 길이 조건 설정
-            min_len = 78 if 'W-Fri' in str(df.index.freq) else 52
+            min_len = 78 if 'W' in str(df.index.freqstr) else 52
             if len(df) < min_len:
                 return "- (데이터 부족)"
 
@@ -89,22 +88,27 @@ def analyze_stock(code, name, current_change):
             high_52 = df['고가'].rolling(52).max()
             low_52 = df['저가'].rolling(52).min()
             
-            # 2. 선행스팬 (미래 데이터)
-            df['senkou_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(26)
-            df['senkou_b'] = ((high_52 + low_52) / 2).shift(26)
+            # 2. 선행스팬 (미래 데이터). shift(25)를 사용 (26일 후의 값이므로)
+            df['senkou_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(25)
+            df['senkou_b'] = ((high_52 + low_52) / 2).shift(25)
 
-            # 3. 현재 주가와 미래의 구름대를 비교하기 위해 데이터 정렬
-            # 현재 시점의 주가/종가
+            # 3. [핵심 로직] 현재 주가와 그에 맞는 구름대 값을 정확히 매칭
+            # shift(25)를 했으므로, 현재 주가(price)에 대한 구름대는 26번째 이전 행에 있음
+            if len(df) < 26:
+                return "- (계산 불가)"
+
+            # 현재(가장 마지막) 주가
             price = df['종가'].iloc[-1]
+            # 직전 주가
             prev_price = df['종가'].iloc[-2]
 
-            # 26일(주) 전의 선행스팬 값 (이것이 현재 시점의 구름대가 됨)
-            cloud_top = df['senkou_a'].iloc[-1]
-            cloud_bottom = df['senkou_b'].iloc[-1]
-            
-            # 27일(주) 전의 선행스팬 값 (이것이 직전 시점의 구름대가 됨)
-            prev_cloud_top = df['senkou_a'].iloc[-2]
-            prev_cloud_bottom = df['senkou_b'].iloc[-2]
+            # 현재 주가에 해당하는 구름대 (26행 이전의 값)
+            cloud_top = df['senkou_a'].iloc[-26]
+            cloud_bottom = df['senkou_b'].iloc[-26]
+
+            # 직전 주가에 해당하는 구름대 (27행 이전의 값)
+            prev_cloud_top = df['senkou_a'].iloc[-27]
+            prev_cloud_bottom = df['senkou_b'].iloc[-27]
             
             # NaN 값이 있는지 최종 확인
             if pd.isna(price) or pd.isna(cloud_top) or pd.isna(cloud_bottom) or pd.isna(prev_price) or pd.isna(prev_cloud_top) or pd.isna(prev_cloud_bottom):
@@ -123,10 +127,10 @@ def analyze_stock(code, name, current_change):
         # 1. 일봉 기준 분석
         ichimoku_daily = get_ichimoku_status(df_daily.set_index('날짜'))
 
-        # 2. 주봉 기준 분석
+        # 2. 주봉 기준 분석 (결측치 제거 로직 추가)
         df_weekly = df_daily.set_index('날짜').resample('W-Fri').agg(
             {'종가': 'last', '고가': 'max', '저가': 'min', '거래량': 'sum'}
-        )
+        ).dropna() # 데이터가 없는 주(week) 제거
         ichimoku_weekly = get_ichimoku_status(df_weekly)
 
         # 3. 일봉 기준 MACD 상태 분석 (기존 로직 유지)
@@ -169,7 +173,9 @@ def analyze_stock(code, name, current_change):
 
         return [code, name, current_change, int(price), disparity_fmt, status, ichimoku_daily, ichimoku_weekly, f"{trend} | {macd_trend_status}", chart_url]
     except Exception:
+        # 오류 발생 시 None을 반환하여 해당 종목 건너뛰기
         return None
+
 # [수정] '등률' -> '등락률' 오타를 수정한 함수
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
