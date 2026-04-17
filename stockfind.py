@@ -62,17 +62,18 @@ def get_price_data(code, max_pages=30): # 데이터 충분히 가져오기
 # [최종 수정] 주봉 계산 오류를 바로잡은 analyze_stock 함수
 # [최종 수정] 이동평균선 '크로스오버' 상태 분석 기능으로 교체
 # [최종 수정] '최근 0-2일' 구름대 돌파를 감지하는 로직으로 대폭 수정
+# [최종 수정] '구름대 위/아래' 상태가 명확히 표시되도록 로직을 바로잡은 함수
 def analyze_stock(code, name, current_change):
     try:
         df_daily = get_price_data(code, max_pages=15)
-        if df_daily is None or len(df_daily) < 80: # 계산 안정성을 위해 데이터 요구량 증가
+        if df_daily is None or len(df_daily) < 80:
             return None
 
         # --- 1. 주요 지표 계산 ---
+        # (이전과 동일)
         df_daily['5MA'] = df_daily['종가'].rolling(5).mean()
         df_daily['20MA'] = df_daily['종가'].rolling(20).mean()
         df_daily['60MA'] = df_daily['종가'].rolling(60).mean()
-        
         high_9 = df_daily['고가'].rolling(9).max()
         low_9 = df_daily['저가'].rolling(9).min()
         df_daily['tenkan_sen'] = (high_9 + low_9) / 2
@@ -83,54 +84,51 @@ def analyze_stock(code, name, current_change):
         high_52 = df_daily['고가'].rolling(52).max()
         low_52 = df_daily['저가'].rolling(52).min()
         df_daily['senkou_b'] = ((high_52 + low_52) / 2).shift(25)
-
         ema12 = df_daily['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df_daily['종가'].ewm(span=26, adjust=False).mean()
         df_daily['MACD'] = ema12 - ema26
         df_daily['MACD_Signal'] = df_daily['MACD'].ewm(span=9, adjust=False).mean()
         df_daily['MACD_hist'] = df_daily['MACD'] - df_daily['MACD_Signal']
-        
         df_daily.dropna(inplace=True)
-        if len(df_daily) < 28: # senkou span shift(25) + 3일 비교를 위해
+
+        if len(df_daily) < 28:
             return None
 
-        # --- 2. [핵심] 최근 3일간의 구름대 돌파 여부 분석 ---
-        def check_recent_breakout(df):
-            # 최근 3일 데이터 추출
-            recent_3_days = df.iloc[-3:].copy()
-            # 각 날짜에 맞는 구름대 값 매칭 (26일 전 데이터)
-            cloud_data = df.iloc[-28:-25].copy()
+        # --- 2. [핵심 수정] 훨씬 더 명확하고 단순해진 구름대 분석 로직 ---
+        def check_ichimoku_status(df):
+            # 분석에 필요한 마지막 3일 데이터와 그에 맞는 구름대 데이터 준비
+            price_today, price_yesterday, price_2days_ago = df['종가'].iloc[-1], df['종가'].iloc[-2], df['종가'].iloc[-3]
             
-            recent_3_days['cloud_top'] = cloud_data['senkou_a'].values
-            recent_3_days['cloud_bottom'] = cloud_data['senkou_b'].values
+            cloud_top_today, cloud_bottom_today = df['senkou_a'].iloc[-26], df['senkou_b'].iloc[-26]
+            cloud_top_yesterday, cloud_bottom_yesterday = df['senkou_a'].iloc[-27], df['senkou_b'].iloc[-27]
+            cloud_top_2days_ago, cloud_bottom_2days_ago = df['senkou_a'].iloc[-28], df['senkou_b'].iloc[-28]
             
-            positions = []
-            for _, row in recent_3_days.iterrows():
-                if row['종가'] > row['cloud_top']: positions.append('above')
-                elif row['종가'] < row['cloud_bottom']: positions.append('below')
-                else: positions.append('inside')
+            # --- 현재 위치를 먼저 판단 ---
+            # 1. 현재 구름대 위에 있는 경우
+            if price_today > cloud_top_today:
+                # 어제나 그제 구름대 위가 아니었다면 '최근 상향돌파'
+                if not (price_yesterday > cloud_top_yesterday and price_2days_ago > cloud_top_2days_ago):
+                    return '🔥 최근 상향돌파'
+                else: # 3일 연속 위에 있었다면 '상승세 유지'
+                    return '📈 상승세 유지'
             
-            # 오늘(last)은 위에 있고, 지난 2일 중 한번이라도 위가 아니었다면 '최근 상향돌파'
-            if positions[-1] == 'above' and positions[:-1] != ['above', 'above']:
-                return '🔥 최근 상향돌파'
-            # 오늘(last)은 아래에 있고, 지난 2일 중 한번이라도 아래가 아니었다면 '최근 하향이탈'
-            elif positions[-1] == 'below' and positions[:-1] != ['below', 'below']:
-                return '🧊 최근 하향이탈'
-            # 3일 내내 위에 있었다면 '상승세 유지'
-            elif positions == ['above', 'above', 'above']:
-                return '📈 상승세 유지'
-            # 3일 내내 아래에 있었다면 '하락세 유지'
-            elif positions == ['below', 'below', 'below']:
-                return '📉 하락세 유지'
+            # 2. 현재 구름대 아래에 있는 경우
+            elif price_today < cloud_bottom_today:
+                # 어제나 그제 구름대 아래가 아니었다면 '최근 하향이탈'
+                if not (price_yesterday < cloud_bottom_yesterday and price_2days_ago < cloud_bottom_2days_ago):
+                    return '🧊 최근 하향이탈'
+                else: # 3일 연속 아래에 있었다면 '하락세 유지'
+                    return '📉 하락세 유지'
+            
+            # 3. 그 외는 모두 구름대 안에 있는 것
             else:
-                return '🌫️ 구름대 혼조'
+                return '🌫️ 구름대 진입'
 
-        ichimoku_status = check_recent_breakout(df_daily)
+        ichimoku_status = check_ichimoku_status(df_daily)
         
-        # --- 3. MA 크로스오버 & MACD 신호 분석 ---
+        # --- 3. MA 크로스오버 & MACD 신호 분석 (이전과 동일) ---
         last = df_daily.iloc[-1]
         prev = df_daily.iloc[-2]
-
         def get_ma_crossover_status(last_row, prev_row, ma_col):
             price_last, ma_last = last_row['종가'], last_row[ma_col]
             price_prev, ma_prev = prev_row['종가'], prev_row[ma_col]
