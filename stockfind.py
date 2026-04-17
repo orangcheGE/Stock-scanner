@@ -59,10 +59,6 @@ def get_price_data(code, max_pages=30): # 데이터 충분히 가져오기
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
-# [최종 수정] 주봉 계산 오류를 바로잡은 analyze_stock 함수
-# [최종 수정] 이동평균선 '크로스오버' 상태 분석 기능으로 교체
-# [최종 수정] '최근 0-2일' 구름대 돌파를 감지하는 로직으로 대폭 수정
-# [최종 수정] '구름대 위/아래' 상태가 명확히 표시되도록 로직을 바로잡은 함수
 def analyze_stock(code, name, current_change):
     try:
         df_daily = get_price_data(code, max_pages=15)
@@ -110,7 +106,7 @@ def analyze_stock(code, name, current_change):
                 if not (price_yesterday > cloud_top_yesterday and price_2days_ago > cloud_top_2days_ago):
                     return '🔥 최근 상향돌파'
                 else: # 3일 연속 위에 있었다면 '상승세 유지'
-                    return '📈 상승세 유지'
+                    return '📈 구름대 위'
             
             # 2. 현재 구름대 아래에 있는 경우
             elif price_today < cloud_bottom_today:
@@ -118,7 +114,7 @@ def analyze_stock(code, name, current_change):
                 if not (price_yesterday < cloud_bottom_yesterday and price_2days_ago < cloud_bottom_2days_ago):
                     return '🧊 최근 하향이탈'
                 else: # 3일 연속 아래에 있었다면 '하락세 유지'
-                    return '📉 하락세 유지'
+                    return '📉 구름대 아래'
             
             # 3. 그 외는 모두 구름대 안에 있는 것
             else:
