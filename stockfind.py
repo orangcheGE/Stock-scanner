@@ -61,18 +61,18 @@ def get_price_data(code, max_pages=30): # 데이터 충분히 가져오기
 
 # [최종 수정] 주봉 계산 오류를 바로잡은 analyze_stock 함수
 # [최종 수정] 이동평균선 '크로스오버' 상태 분석 기능으로 교체
+# [최종 수정] '최근 0-2일' 구름대 돌파를 감지하는 로직으로 대폭 수정
 def analyze_stock(code, name, current_change):
     try:
         df_daily = get_price_data(code, max_pages=15)
-        if df_daily is None or len(df_daily) < 70:
+        if df_daily is None or len(df_daily) < 80: # 계산 안정성을 위해 데이터 요구량 증가
             return None
 
-        # --- 1. 주요 이동평균선 계산 ---
+        # --- 1. 주요 지표 계산 ---
         df_daily['5MA'] = df_daily['종가'].rolling(5).mean()
         df_daily['20MA'] = df_daily['종가'].rolling(20).mean()
         df_daily['60MA'] = df_daily['종가'].rolling(60).mean()
-
-        # --- 2. 일목균형표(일봉) 계산 ---
+        
         high_9 = df_daily['고가'].rolling(9).max()
         low_9 = df_daily['저가'].rolling(9).min()
         df_daily['tenkan_sen'] = (high_9 + low_9) / 2
@@ -84,7 +84,6 @@ def analyze_stock(code, name, current_change):
         low_52 = df_daily['저가'].rolling(52).min()
         df_daily['senkou_b'] = ((high_52 + low_52) / 2).shift(25)
 
-        # --- MACD 계산 ---
         ema12 = df_daily['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df_daily['종가'].ewm(span=26, adjust=False).mean()
         df_daily['MACD'] = ema12 - ema26
@@ -92,63 +91,71 @@ def analyze_stock(code, name, current_change):
         df_daily['MACD_hist'] = df_daily['MACD'] - df_daily['MACD_Signal']
         
         df_daily.dropna(inplace=True)
-        if len(df_daily) < 2: # 최소 2일치 데이터로 비교
+        if len(df_daily) < 28: # senkou span shift(25) + 3일 비교를 위해
             return None
 
+        # --- 2. [핵심] 최근 3일간의 구름대 돌파 여부 분석 ---
+        def check_recent_breakout(df):
+            # 최근 3일 데이터 추출
+            recent_3_days = df.iloc[-3:].copy()
+            # 각 날짜에 맞는 구름대 값 매칭 (26일 전 데이터)
+            cloud_data = df.iloc[-28:-25].copy()
+            
+            recent_3_days['cloud_top'] = cloud_data['senkou_a'].values
+            recent_3_days['cloud_bottom'] = cloud_data['senkou_b'].values
+            
+            positions = []
+            for _, row in recent_3_days.iterrows():
+                if row['종가'] > row['cloud_top']: positions.append('above')
+                elif row['종가'] < row['cloud_bottom']: positions.append('below')
+                else: positions.append('inside')
+            
+            # 오늘(last)은 위에 있고, 지난 2일 중 한번이라도 위가 아니었다면 '최근 상향돌파'
+            if positions[-1] == 'above' and positions[:-1] != ['above', 'above']:
+                return '🔥 최근 상향돌파'
+            # 오늘(last)은 아래에 있고, 지난 2일 중 한번이라도 아래가 아니었다면 '최근 하향이탈'
+            elif positions[-1] == 'below' and positions[:-1] != ['below', 'below']:
+                return '🧊 최근 하향이탈'
+            # 3일 내내 위에 있었다면 '상승세 유지'
+            elif positions == ['above', 'above', 'above']:
+                return '📈 상승세 유지'
+            # 3일 내내 아래에 있었다면 '하락세 유지'
+            elif positions == ['below', 'below', 'below']:
+                return '📉 하락세 유지'
+            else:
+                return '🌫️ 구름대 혼조'
+
+        ichimoku_status = check_recent_breakout(df_daily)
+        
+        # --- 3. MA 크로스오버 & MACD 신호 분석 ---
         last = df_daily.iloc[-1]
         prev = df_daily.iloc[-2]
 
-        # --- 3. [신규] 이동평균선 크로스오버 분석 함수 ---
         def get_ma_crossover_status(last_row, prev_row, ma_col):
-            price_last = last_row['종가']
-            ma_last = last_row[ma_col]
-            price_prev = prev_row['종가']
-            ma_prev = prev_row[ma_col]
-
-            # 골든크로스
-            if price_last > ma_last and price_prev <= ma_prev:
-                return "🔥 골든크로스"
-            # 데드크로스
-            elif price_last < ma_last and price_prev >= ma_prev:
-                return "🧊 데드크로스"
-            # 상승 추세 유지
-            elif price_last > ma_last:
-                return "📈 상승 유지"
-            # 하락 추세 유지
-            else:
-                return "📉 하락 유지"
+            price_last, ma_last = last_row['종가'], last_row[ma_col]
+            price_prev, ma_prev = prev_row['종가'], prev_row[ma_col]
+            if price_last > ma_last and price_prev <= ma_prev: return "🔥 골든크로스"
+            elif price_last < ma_last and price_prev >= ma_prev: return "🧊 데드크로스"
+            elif price_last > ma_last: return "📈 상승 유지"
+            else: return "📉 하락 유지"
 
         status_5ma = get_ma_crossover_status(last, prev, '5MA')
         status_20ma = get_ma_crossover_status(last, prev, '20MA')
         status_60ma = get_ma_crossover_status(last, prev, '60MA')
         ma_crossover_text = f"5MA: {status_5ma} | 20MA: {status_20ma} | 60MA: {status_60ma}"
         
-        # --- 4. 일목균형표(일봉) 상태 분석 ---
-        price = last['종가']
-        cloud_top = last['senkou_a']
-        cloud_bottom = last['senkou_b']
-        ichimoku_status = "🌫️ 구름대 진입"
-        if price > cloud_top: ichimoku_status = "☀️ 구름대 위"
-        elif price < cloud_bottom: ichimoku_status = "💧 구름대 아래"
-        
-        # --- 5. MACD 기반 매매 신호 분석 ---
         status = "관망"
-        if (last['MACD_hist'] > 0 and prev['MACD_hist'] <= 0):
-            status = "적극 매수"
-        elif (last['MACD_hist'] < 0 and prev['MACD_hist'] >= 0):
-            status = "적극 매도"
-        elif status_20ma == "🔥 골든크로스":
-             status = "매수 관심"
-        elif status_20ma == "🧊 데드크로스":
-            status = "매도 관심"
-        elif price > last['20MA']:
-            status = "홀드"
+        if (last['MACD_hist'] > 0 and prev['MACD_hist'] <= 0): status = "적극 매수"
+        elif (last['MACD_hist'] < 0 and prev['MACD_hist'] >= 0): status = "적극 매도"
+        elif ichimoku_status == '🔥 최근 상향돌파': status = "매수 관심"
+        elif ichimoku_status == '🧊 최근 하향이탈': status = "매도 관심"
+        elif last['종가'] > last['20MA']: status = "홀드"
 
-        disparity = ((price / last['20MA']) - 1) * 100 if last['20MA'] > 0 else 0
+        disparity = ((last['종가'] / last['20MA']) - 1) * 100 if last['20MA'] > 0 else 0
         disparity_fmt = f"{'+' if disparity >= 0 else ''}{round(disparity, 2)}%"
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
 
-        return [code, name, current_change, int(price), disparity_fmt, status, ichimoku_status, ma_crossover_text, chart_url]
+        return [code, name, current_change, int(last['종가']), disparity_fmt, status, ichimoku_status, ma_crossover_text, chart_url]
     except Exception:
         return None
 
@@ -159,21 +166,29 @@ def show_styled_dataframe(dataframe):
         st.write("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
         return
 
-    # 'MA 크로스' 컬럼의 각 셀에 대한 스타일링 함수
+    # '일목(일봉)' 컬럼 스타일링 함수
+    def style_ichimoku_column(val):
+        # [핵심] '최근 돌파'에 대한 특별 스타일
+        if '🔥 최근 상향돌파' in val:
+            return 'color: white; background-color: #c62828; font-weight: bold;' # 진한 빨강 배경
+        if '🧊 최근 하향이탈' in val:
+            return 'color: white; background-color: #1565c0; font-weight: bold;' # 진한 파랑 배경
+        
+        # 기존 스타일
+        if '유지' in val and '상승' in val: return 'color: #d32f2f;' # 빨간색 텍스트
+        if '유지' in val and '하락' in val: return 'color: #1976d2;' # 파란색 텍스트
+        if '혼조' in val: return 'color: #757575;' # 회색 텍스트
+        return ''
+
+    # 'MA 크로스' 컬럼 스타일링 함수
     def style_ma_crossover(val):
-        color = '#757575' # 기본 회색
-        font_weight = 'normal'
-        if '🔥' in val:
-            color = '#d32f2f' # 빨간색
-            font_weight = 'bold'
-        elif '🧊' in val:
-            color = '#1976d2' # 파란색
-            font_weight = 'bold'
-        elif '📈' in val:
-            color = '#ef5350' # 옅은 빨간색
-        elif '📉' in val:
-            color = '#64b5f6' # 옅은 파란색
-        return f'color: {color}; font-weight: {font_weight};'
+        # 스타일 코드는 이전과 동일하게 유지 가능 (또는 필요에 따라 수정)
+        color, weight = '#757575', 'normal'
+        if '🔥' in val: color, weight = '#d32f2f', 'bold'
+        elif '🧊' in val: color, weight = '#1976d2', 'bold'
+        elif '📈' in val: color = '#ef5350'
+        elif '📉' in val: color = '#64b5f6'
+        return f'color: {color}; font-weight: {weight};'
 
     dynamic_height = (len(dataframe) + 1) * 35 + 3
 
@@ -181,8 +196,8 @@ def show_styled_dataframe(dataframe):
         dataframe.style
         .map(lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''), subset=['상태'])
         .map(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등락률', '이격률'])
-        .map(lambda x: 'color: #d32f2f; font-weight: bold;' if '위' in str(x) else ('color: #1976d2; font-weight: bold;' if '아래' in str(x) else 'color: #757575;'), subset=['일목(일봉)'])
-        # [핵심 수정] .applymap을 올바른 함수인 .map으로 변경했습니다.
+        # [수정] '일목(일봉)' 컬럼에 새로운 스타일 함수 적용
+        .map(style_ichimoku_column, subset=['일목(일봉)'])
         .map(style_ma_crossover, subset=['MA 크로스']),
         use_container_width=True,
         height=dynamic_height,
