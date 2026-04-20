@@ -60,78 +60,76 @@ def get_price_data(code, max_pages=30): # 데이터 충분히 가져오기
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
 # [최종 수정] 일목균형표 구름대 비교 로직의 결정적 오류를 바로잡은 함수
+# [최종 결정판] Pandas 인덱싱을 이용해 구름대 계산 오류를 원천적으로 해결한 함수
 def analyze_stock(code, name, current_change):
     try:
-        df_daily = get_price_data(code, max_pages=15)
-        if df_daily is None or len(df_daily) < 80:
+        df_price = get_price_data(code, max_pages=20) # 데이터 충분히 확보
+        # 일목균형표(52일)+미래(26일) 기간을 위해 최소 80일 이상 데이터 필요
+        if df_price is None or len(df_price) < 80:
             return None
 
-        # --- 1. 일목균형표 지표를 먼저 계산 ---
-        # 전환선 (9), 기준선 (26)
-        high_9 = df_daily['고가'].rolling(9).max()
-        low_9 = df_daily['저가'].rolling(9).min()
-        df_daily['tenkan_sen'] = (high_9 + low_9) / 2
-        high_26 = df_daily['고가'].rolling(26).max()
-        low_26 = df_daily['저가'].rolling(26).min()
-        df_daily['kijun_sen'] = (high_26 + low_26) / 2
+        # --- 1. 현재/과거 지표 계산 ---
+        df_present = df_price.set_index('날짜')
+        df_present['5MA'] = df_present['종가'].rolling(5).mean()
+        df_present['20MA'] = df_present['종가'].rolling(20).mean()
+        df_present['60MA'] = df_present['종가'].rolling(60).mean()
 
-        # 선행스팬 B (52)
-        high_52 = df_daily['고가'].rolling(52).max()
-        low_52 = df_daily['저가'].rolling(52).min()
-        senkou_b_base = (high_52 + low_52) / 2
+        high_9 = df_present['고가'].rolling(9).max()
+        low_9 = df_present['저가'].rolling(9).min()
+        df_present['tenkan_sen'] = (high_9 + low_9) / 2
 
-        # [핵심 로직 수정] 현재 주가와 비교할 '오늘의 구름대'를 정확히 계산
-        # 선행스팬 A: (전환선+기준선)/2 를 26일 과거 값에서 가져옴
-        df_daily['senkou_a'] = ((df_daily['tenkan_sen'] + df_daily['kijun_sen']) / 2).shift(-25)
-        # 선행스팬 B: 52일 평균을 26일 과거 값에서 가져옴
-        df_daily['senkou_b'] = senkou_b_base.shift(-25)
+        high_26 = df_present['고가'].rolling(26).max()
+        low_26 = df_present['저가'].rolling(26).min()
+        df_present['kijun_sen'] = (high_26 + low_26) / 2
+
+        high_52 = df_present['고가'].rolling(52).max()
+        low_52 = df_present['저가'].rolling(52).min()
+        df_present['senkou_b_base'] = (high_52 + low_52) / 2
+
+        ema12 = df_present['종가'].ewm(span=12, adjust=False).mean()
+        ema26 = df_present['종가'].ewm(span=26, adjust=False).mean()
+        df_present['MACD'] = ema12 - ema26
+        df_present['MACD_Signal'] = df_present['MACD'].ewm(span=9, adjust=False).mean()
+        df_present['MACD_hist'] = df_present['MACD'] - df_present['MACD_Signal']
         
-        # --- 2. 나머지 지표 계산 ---
-        df_daily['5MA'] = df_daily['종가'].rolling(5).mean()
-        df_daily['20MA'] = df_daily['종가'].rolling(20).mean()
-        df_daily['60MA'] = df_daily['종가'].rolling(60).mean()
-        ema12 = df_daily['종가'].ewm(span=12, adjust=False).mean()
-        ema26 = df_daily['종가'].ewm(span=26, adjust=False).mean()
-        df_daily['MACD'] = ema12 - ema26
-        df_daily['MACD_Signal'] = df_daily['MACD'].ewm(span=9, adjust=False).mean()
-        df_daily['MACD_hist'] = df_daily['MACD'] - df_daily['MACD_Signal']
+        # --- 2. [핵심] 미래의 구름대를 계산하여 별도 DataFrame으로 생성 ---
+        df_future = pd.DataFrame(index=df_present.index)
+        df_future['senkou_a'] = (df_present['tenkan_sen'] + df_present['kijun_sen']) / 2
+        df_future['senkou_b'] = df_present['senkou_b_base']
+        # 인덱스를 26일 미래로 이동
+        df_future.index = df_future.index + pd.DateOffset(days=26)
         
-        df_daily.dropna(inplace=True)
-        if len(df_daily) < 4: # 최소 4일치 데이터로 비교
-            return None
+        # --- 3. 현재 데이터와 미래(구름대) 데이터를 날짜 기준으로 병합 ---
+        df_merged = pd.merge(df_present, df_future, left_index=True, right_index=True, how='left')
+        
+        # 분석을 위해 최종 데이터 정제
+        df_final = df_merged.dropna().copy()
+        if len(df_final) < 4: return None
 
-        # --- 3. '오늘의 구름대' 상태 분석 ---
-        def check_ichimoku_status(df):
-            # 분석에 필요한 마지막 3일 데이터 추출
-            df_check = df.tail(3)
-            if len(df_check) < 3: return "🌫️ 데이터 부족"
-            
-            price_today, price_yesterday, price_2days_ago = df_check['종가'].iloc[-1], df_check['종가'].iloc[-2], df_check['종가'].iloc[-3]
-            cloud_top_today, cloud_bottom_today = max(df_check['senkou_a'].iloc[-1], df_check['senkou_b'].iloc[-1]), min(df_check['senkou_a'].iloc[-1], df_check['senkou_b'].iloc[-1])
-            cloud_top_yesterday, cloud_bottom_yesterday = max(df_check['senkou_a'].iloc[-2], df_check['senkou_b'].iloc[-2]), min(df_check['senkou_a'].iloc[-2], df_check['senkou_b'].iloc[-2])
-            
-            # --- 현재 위치를 먼저 판단 ---
-            if price_today > cloud_top_today:
-                # 어제 구름대 위가 아니었다면 '최근 상향돌파'
-                if not (price_yesterday > cloud_top_yesterday):
-                    return '🔥 최근 상향돌파'
-                else: # 어제도 오늘도 위에 있었다면
-                    return '📈 구름대 위'
-            
-            elif price_today < cloud_bottom_today:
-                # 어제 구름대 아래가 아니었다면 '최근 하향이탈'
-                if not (price_yesterday < cloud_bottom_yesterday):
-                    return '🧊 최근 하향이탈'
-                else: # 어제도 오늘도 아래에 있었다면
-                    return '📉 구름대 아래'
+        # --- 4. '오늘'의 정확한 구름대 상태 분석 ---
+        last = df_final.iloc[-1]
+        prev = df_final.iloc[-2]
+        
+        price_today = last['종가']
+        cloud_top_today = max(last['senkou_a'], last['senkou_b'])
+        cloud_bottom_today = min(last['senkou_a'], last['senkou_b'])
+        
+        price_yesterday = prev['종가']
+        cloud_top_yesterday = max(prev['senkou_a'], prev['senkou_b'])
+        
+        ichimoku_status = "🌫️ 구름대 진입"
+        if price_today > cloud_top_today:
+            if price_yesterday <= cloud_top_yesterday:
+                ichimoku_status = "🔥 최근 상향돌파"
             else:
-                return '🌫️ 구름대 진입'
-
-        ichimoku_status = check_ichimoku_status(df_daily)
+                ichimoku_status = "📈 구름대 위"
+        elif price_today < cloud_bottom_today:
+            if price_yesterday >= cloud_top_yesterday:
+                ichimoku_status = "🧊 최근 하향이탈"
+            else:
+                ichimoku_status = "📉 구름대 아래"
         
-        # --- 4. MA 크로스오버 & MACD 신호 분석 ---
-        last = df_daily.iloc[-1]
-        prev = df_daily.iloc[-2]
+        # --- 5. MA 크로스오버 & MACD 신호 분석 ---
         def get_ma_crossover_status(last_row, prev_row, ma_col):
             price_last, ma_last = last_row['종가'], last_row[ma_col]
             price_prev, ma_prev = prev_row['종가'], prev_row[ma_col]
@@ -157,7 +155,9 @@ def analyze_stock(code, name, current_change):
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
 
         return [code, name, current_change, int(last['종가']), disparity_fmt, status, ichimoku_status, ma_crossover_text, chart_url]
-    except Exception:
+    except Exception as e:
+        # 오류 디버깅을 위해 임시로 print문 추가 (나중에 제거 가능)
+        # print(f"Error processing {code}: {e}")
         return None
 
 # [수정] '등률' -> '등락률' 오타를 수정한 함수
