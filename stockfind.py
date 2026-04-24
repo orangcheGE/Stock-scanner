@@ -10,6 +10,7 @@ import urllib.parse
 from datetime import datetime
 
 # (get_headers, get_market_sum_pages, get_price_data 함수는 이전과 동일)
+
 def get_headers():
     return {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -59,8 +60,7 @@ def get_price_data(code, max_pages=30): # 데이터 충분히 가져오기
     df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
     return df.dropna(subset=['날짜','종가']).sort_values('날짜').reset_index(drop=True)
 
-# [최종 수정] 일목균형표 구름대 비교 로직의 결정적 오류를 바로잡은 함수
-# [최종 결정판] Pandas 인덱싱을 이용해 구름대 계산 오류를 원천적으로 해결한 함수
+
 def analyze_stock(code, name, current_change):
     try:
         df_price = get_price_data(code, max_pages=20) # 데이터 충분히 확보
@@ -73,19 +73,15 @@ def analyze_stock(code, name, current_change):
         df_present['5MA'] = df_present['종가'].rolling(5).mean()
         df_present['20MA'] = df_present['종가'].rolling(20).mean()
         df_present['60MA'] = df_present['종가'].rolling(60).mean()
-
         high_9 = df_present['고가'].rolling(9).max()
         low_9 = df_present['저가'].rolling(9).min()
         df_present['tenkan_sen'] = (high_9 + low_9) / 2
-
         high_26 = df_present['고가'].rolling(26).max()
         low_26 = df_present['저가'].rolling(26).min()
         df_present['kijun_sen'] = (high_26 + low_26) / 2
-
         high_52 = df_present['고가'].rolling(52).max()
         low_52 = df_present['저가'].rolling(52).min()
         df_present['senkou_b_base'] = (high_52 + low_52) / 2
-
         ema12 = df_present['종가'].ewm(span=12, adjust=False).mean()
         ema26 = df_present['종가'].ewm(span=26, adjust=False).mean()
         df_present['MACD'] = ema12 - ema26
@@ -124,18 +120,25 @@ def analyze_stock(code, name, current_change):
             else:
                 ichimoku_status = "📈 구름대 위"
         elif price_today < cloud_bottom_today:
-            if price_yesterday >= cloud_top_yesterday:
+            if price_yesterday >= cloud_top_yesterday: # '구름대 위'에서 '아래'로 떨어진 경우도 '하향이탈'로 포함
                 ichimoku_status = "🧊 최근 하향이탈"
             else:
                 ichimoku_status = "📉 구름대 아래"
         
-        # --- 5. MA 크로스오버 & MACD 신호 분석 ---
+        # --- 5. [수정] MA 크로스오버 & MACD 신호 분석 ---
         def get_ma_crossover_status(last_row, prev_row, ma_col):
             price_last, ma_last = last_row['종가'], last_row[ma_col]
             price_prev, ma_prev = prev_row['종가'], prev_row[ma_col]
-            if price_last > ma_last and price_prev <= ma_prev: return "🔥 골든크로스"
-            elif price_last < ma_last and price_prev >= ma_prev: return "🧊 데드크로스"
-            elif price_last > ma_last: return "📈 상승 유지"
+
+            # 골든크로스: 어제 가격이 MA와 같거나 아래였고, 오늘 가격이 MA 위로 올라섬
+            is_golden_cross = (price_prev <= ma_prev) and (price_last > ma_last)
+            # 데드크로스: 어제 가격이 MA와 같거나 위였고, 오늘 가격이 MA 아래로 내려감
+            is_dead_cross = (price_prev >= ma_prev) and (price_last < ma_last)
+
+            if is_golden_cross: return "🔥 골든크로스"
+            if is_dead_cross: return "🧊 데드크로스"
+            
+            if price_last > ma_last: return "📈 상승 유지"
             else: return "📉 하락 유지"
 
         status_5ma = get_ma_crossover_status(last, prev, '5MA')
@@ -156,120 +159,18 @@ def analyze_stock(code, name, current_change):
 
         return [code, name, current_change, int(last['종가']), disparity_fmt, status, ichimoku_status, ma_crossover_text, chart_url]
     except Exception as e:
-        # 오류 디버깅을 위해 임시로 print문 추가 (나중에 제거 가능)
-        # print(f"Error processing {code}: {e}")
         return None
 
-# [수정] '등률' -> '등락률' 오타를 수정한 함수
-# [최종 수정] .applymap을 .map으로 변경하여 AttributeError를 해결한 함수
+
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다. 왼쪽에서 '분석 시작'을 눌러주세요.")
         return
 
-    # '일목(일봉)' 컬럼 스타일링 함수
     def style_ichimoku_column(val):
-        # [핵심] '최근 돌파'에 대한 특별 스타일
         if '🔥 최근 상향돌파' in val:
-            return 'color: white; background-color: #c62828; font-weight: bold;' # 진한 빨강 배경
+            return 'color: white; background-color: #c62828; font-weight: bold;'
         if '🧊 최근 하향이탈' in val:
-            return 'color: white; background-color: #1565c0; font-weight: bold;' # 진한 파랑 배경
-        
-        # 기존 스타일
-        if '유지' in val and '상승' in val: return 'color: #d32f2f;' # 빨간색 텍스트
-        if '유지' in val and '하락' in val: return 'color: #1976d2;' # 파란색 텍스트
-        if '혼조' in val: return 'color: #757575;' # 회색 텍스트
-        return ''
-
-    # 'MA 크로스' 컬럼 스타일링 함수
-    def style_ma_crossover(val):
-        # 스타일 코드는 이전과 동일하게 유지 가능 (또는 필요에 따라 수정)
-        color, weight = '#757575', 'normal'
-        if '🔥' in val: color, weight = '#d32f2f', 'bold'
-        elif '🧊' in val: color, weight = '#1976d2', 'bold'
-        elif '📈' in val: color = '#ef5350'
-        elif '📉' in val: color = '#64b5f6'
-        return f'color: {color}; font-weight: {weight};'
-
-    dynamic_height = (len(dataframe) + 1) * 35 + 3
-
-    st.dataframe(
-        dataframe.style
-        .map(lambda x: 'color: #ef5350; font-weight: bold' if '매수' in str(x) else ('color: #42a5f5' if '매도' in str(x) else ''), subset=['상태'])
-        .map(lambda x: 'color: #ef5350' if '+' in str(x) else ('color: #42a5f5' if '-' in str(x) else ''), subset=['등락률', '이격률'])
-        # [수정] '일목(일봉)' 컬럼에 새로운 스타일 함수 적용
-        .map(style_ichimoku_column, subset=['일목(일봉)'])
-        .map(style_ma_crossover, subset=['MA 크로스']),
-        use_container_width=True,
-        height=dynamic_height,
-        column_config={
-            "차트": st.column_config.LinkColumn("차트", display_text="열기"),
-            "코드": st.column_config.TextColumn("코드", width="small"),
-            "MA 크로스": st.column_config.TextColumn("MA 크로스", width="large")
-        },
-        hide_index=True
-    )
-
-# --- UI 부분 ---
-st.title("🛡️ 스마트 데이터 스캐너")
-st.sidebar.header("설정")
-market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
-selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
-start_btn = st.sidebar.button("🚀 분석 시작")
-# (이하 UI 코드 기존과 동일)
-st.subheader("📊 진단 및 필터링")
-c1, c2, c3 = st.columns(3)
-total_metric = c1.empty()
-buy_metric = c2.empty()
-sell_metric = c3.empty()
-total_metric.metric("전체 종목", "0개")
-buy_metric.metric("매수 신호", "0개")
-sell_metric.metric("매도 신호", "0개")
-col1, col2, col3 = st.columns(3)
-if 'filter' not in st.session_state: st.session_state.filter = "전체"
-btn_all = col1.button("🔄 전체 보기", use_container_width=True)
-btn_buy = col2.button("🔴 매수 관련만", use_container_width=True)
-btn_sell = col3.button("🔵 매도 관련만", use_container_width=True)
-if btn_all: st.session_state.filter = "전체"
-if btn_buy: st.session_state.filter = "매수"
-if btn_sell: st.session_state.filter = "매도"
-st.markdown("---")
-result_title = st.empty()
-result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter})")
-main_result_area = st.empty()
-
-if start_btn:
-    market_df = get_market_sum_pages(selected_pages, market)
-    if not market_df.empty:
-        results = []
-        progress_bar = st.progress(0)
-        for i, (idx, row) in enumerate(market_df.iterrows()):
-            res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
-            if res:
-                results.append(res)
-                # [수정] 컬럼명을 'MA 크로스'로 변경
-                df_all = pd.DataFrame(results, columns=['코드', '종목명', '등락률', '현재가', '이격률', '상태', '일목(일봉)', 'MA 크로스', '차트'])
-                st.session_state['df_all'] = df_all
-                # (이하 코드 생략)
-                total_metric.metric("전체 종목", f"{len(df_all)}개")
-                buy_metric.metric("매수 신호", f"{len(df_all[df_all['상태'].str.contains('매수')])}개")
-                sell_metric.metric("매도 신호", f"{len(df_all[df_all['상태'].str.contains('매도')])}개")
-                with main_result_area:
-                    show_styled_dataframe(df_all)
-            progress_bar.progress((i + 1) / len(market_df))
-        st.success("✅ 분석 완료!")
-# (이하 코드 기존과 동일)
-if 'df_all' in st.session_state:
-    df = st.session_state['df_all']
-    display_df = df.copy()
-    if st.session_state.filter == "매수": display_df = df[df['상태'].str.contains("매수")]
-    elif st.session_state.filter == "매도": display_df = df[df['상태'].str.contains("매도")]
-    with main_result_area:
-        show_styled_dataframe(display_df)
-    email_summary = display_df[['종목명', '현재가', '상태', '일목(일봉)', 'MA 크로스']].to_string(index=False)
-    encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
-    mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
-    st.markdown(f'<a href="{mailto_url}" target="_self" style="text-decoration:none;"><div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">📧 리스트 Outlook 전송</div></a>', unsafe_allow_html=True)
-else:
-    with main_result_area:
-        st.info("사이드바에서 '분석 시작' 버튼을 눌러주세요")
+            return 'color: white; background-color: #1565c0; font-weight: bold;'
+        if '📈 구름대 위' in val: return 'color: #d32f2f;'
+        if '📉 구름대
