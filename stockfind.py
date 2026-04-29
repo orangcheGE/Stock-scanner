@@ -118,13 +118,24 @@ def get_bb_squeeze_status(bandwidth_series):
 # 점수 기반 신호 결정
 # ─────────────────────────────────────────────
 
-def calc_signal_score(last, prev, ichimoku_status, rsi_val, bw_series, price_col='종가'):
+def calc_signal_score(last, prev, ichimoku_status, rsi_val, disparity, bw_series, price_col='종가'):
     """
-    각 지표별 점수 합산 → 종합 신호 반환
+    각 지표별 점수 합산 → 7단계 종합 신호 반환
+    
+    [신호 7단계]
+    🔥 적극매수   : 눌림목 완료 후 재상승 초입. 가장 이상적인 진입 타이밍
+    📈 매수관심   : 상승 초입, 아직 많이 오르지 않은 상태
+    🚀 추세추종   : 이미 많이 올랐지만 추세 강함. 추격 가능하나 리스크 있음
+    🔄 눌림목대기 : 하락 중이지만 지지선 근처, 반등 준비 가능성
+    ⏸️ 관망       : 방향 불명확
+    📉 매도관심   : 하락 추세 진입
+    🧊 적극매도   : 강한 하락 신호
+    
     반환: (총점, 신호문자열, 점수내역dict)
     """
     score = 0
     detail = {}
+    price = last[price_col]
 
     # ── 1. 일목균형표 (±3) ──────────────────
     if '최근 상향돌파' in ichimoku_status:
@@ -143,24 +154,23 @@ def calc_signal_score(last, prev, ichimoku_status, rsi_val, bw_series, price_col
     detail['일목'] = s
 
     # ── 2. MACD 히스토그램 (±2) ─────────────
-    hist_now = last['MACD_hist']
+    hist_now  = last['MACD_hist']
     hist_prev = prev['MACD_hist']
     if hist_now > 0 and hist_prev <= 0:
-        s = 2   # 음→양 전환
+        s = 2    # 음→양 전환 (골든)
     elif hist_now > 0:
-        s = 1   # 양수 유지
+        s = 1    # 양수 유지
     elif hist_now < 0 and hist_prev >= 0:
-        s = -2  # 양→음 전환
+        s = -2   # 양→음 전환 (데드)
     else:
-        s = -1  # 음수 유지
+        s = -1   # 음수 유지
     score += s
     detail['MACD'] = s
 
     # ── 3. 이동평균 정배열 (±2) ─────────────
-    price = last[price_col]
     s = 0
     if price > last['60MA']:
-        s += 1   # 장기 상승 구조
+        s += 1    # 장기 상승 구조
     else:
         s -= 1
     if price > last['20MA']:
@@ -190,35 +200,77 @@ def calc_signal_score(last, prev, ichimoku_status, rsi_val, bw_series, price_col
     detail['RSI'] = s
 
     # ── 5. 거래량 (±1) ───────────────────────
-    if '거래량' in last.index and not pd.isna(last.get('vol_ratio', np.nan)):
-        vol_ratio = last['vol_ratio']
+    vol_ratio = last.get('vol_ratio', np.nan)
+    if not pd.isna(vol_ratio):
         if vol_ratio >= 2.0:
             s = 1
         elif vol_ratio < 0.5:
             s = -1
         else:
             s = 0
-        score += s
-        detail['거래량'] = s
     else:
-        detail['거래량'] = 0
+        s = 0
+    score += s
+    detail['거래량'] = s
 
-    # ── 하드 필터: 장기 하락 구조 페널티 ────
+    # ── 장기 하락 구조 페널티 (-2) ───────────
     if price < last['60MA'] and last['MACD'] < 0:
         score -= 2
         detail['하락페널티'] = -2
     else:
         detail['하락페널티'] = 0
 
-    # ── 신호 결정 ────────────────────────────
-    if score >= 5:
+    # ════════════════════════════════════════
+    # 7단계 신호 결정
+    # ════════════════════════════════════════
+
+    # [조건 사전 계산]
+    is_overbought   = rsi_val > 70                    # 과매수 상태
+    is_high_disp    = disparity > 12                  # 이격률 12% 초과 (많이 오름)
+    is_oversold     = rsi_val < 45                    # 과매도/관심 구간
+    is_near_20ma    = abs(disparity) <= 4             # 20MA 근처 (눌림목 지점)
+    is_above_cloud  = '구름대 위' in ichimoku_status or '상향돌파' in ichimoku_status
+    is_below_cloud  = '구름대 아래' in ichimoku_status or '하향이탈' in ichimoku_status
+    macd_golden     = hist_now > 0 and hist_prev <= 0 # MACD 방금 골든
+    macd_positive   = hist_now > 0                    # MACD 양수
+
+    # ── 🔥 적극매수 ──────────────────────────
+    # 눌림목 완료 후 반등 초입: 구름대 위 + 20MA 근처 + RSI 과매도탈출 + MACD 골든
+    if (score >= 4
+            and is_above_cloud
+            and is_near_20ma
+            and is_oversold
+            and macd_golden):
         signal = "🔥 적극매수"
+
+    # ── 🚀 추세추종 ──────────────────────────
+    # 점수는 높지만(매수 신호) 이미 많이 오른 상태 → 추격 리스크 경고
+    elif (score >= 2
+            and (is_overbought or is_high_disp)):
+        signal = "🚀 추세추종"
+
+    # ── 📈 매수관심 ──────────────────────────
+    # 점수 높고, 과매수/고이격 아닌 상태 → 진입 초입
     elif score >= 2:
         signal = "📈 매수관심"
+
+    # ── 🔄 눌림목대기 ─────────────────────────
+    # 점수는 낮지만 구름대 위 + 20MA 근처 + RSI 관심구간 → 반등 준비
+    elif (score >= -1
+            and is_above_cloud
+            and is_near_20ma
+            and rsi_val <= 55):
+        signal = "🔄 눌림목대기"
+
+    # ── ⏸️ 관망 ──────────────────────────────
     elif score >= -1:
         signal = "⏸️ 관망"
+
+    # ── 📉 매도관심 ──────────────────────────
     elif score >= -4:
         signal = "📉 매도관심"
+
+    # ── 🧊 적극매도 ──────────────────────────
     else:
         signal = "🧊 적극매도"
 
@@ -351,14 +403,14 @@ def analyze_stock(code, name, current_change):
         else:
             vol_display = f"{vol_r}배"
 
-        # ── 점수 기반 종합 신호 ──────────────
-        score, signal, detail = calc_signal_score(
-            last, prev, ichimoku_status, rsi_val, df_final['BB_width']
-        )
-
         # ── 이격률 ───────────────────────────
         disparity = ((last['종가'] / last['20MA']) - 1) * 100 if last['20MA'] > 0 else 0
         disparity_fmt = f"{'+' if disparity >= 0 else ''}{round(disparity, 2)}%"
+
+        # ── 점수 기반 종합 신호 ──────────────
+        score, signal, detail = calc_signal_score(
+            last, prev, ichimoku_status, rsi_val, disparity, df_final['BB_width']
+        )
 
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
 
@@ -386,10 +438,13 @@ COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
 
 
 def style_signal(val):
-    if '적극매수' in str(val): return 'color:white;background-color:#c62828;font-weight:bold'
-    if '매수관심' in str(val): return 'color:#ef5350;font-weight:bold'
-    if '적극매도' in str(val): return 'color:white;background-color:#1565c0;font-weight:bold'
-    if '매도관심' in str(val): return 'color:#42a5f5;font-weight:bold'
+    v = str(val)
+    if '적극매수'   in v: return 'color:white;background-color:#c62828;font-weight:bold'
+    if '매수관심'   in v: return 'color:#ef5350;font-weight:bold'
+    if '추세추종'   in v: return 'color:white;background-color:#e65100;font-weight:bold'  # 주황 (리스크 경고)
+    if '눌림목대기' in v: return 'color:white;background-color:#6a1b9a;font-weight:bold'  # 보라 (준비 대기)
+    if '적극매도'   in v: return 'color:white;background-color:#1565c0;font-weight:bold'
+    if '매도관심'   in v: return 'color:#42a5f5;font-weight:bold'
     return 'color:#9e9e9e'
 
 
@@ -414,11 +469,11 @@ def style_rsi(val):
 def style_score(val):
     try:
         v = int(val)
-        if v >= 5:  return 'color:white;background-color:#c62828;font-weight:bold'
-        if v >= 2:  return 'color:#ef5350;font-weight:bold'
-        if v >= -1: return 'color:#9e9e9e'
-        if v >= -4: return 'color:#42a5f5;font-weight:bold'
-        return 'color:white;background-color:#1565c0;font-weight:bold'
+        if v >= 5:  return 'color:white;background-color:#c62828;font-weight:bold'  # 적극매수
+        if v >= 2:  return 'color:#ef5350;font-weight:bold'                         # 매수관심/추세추종
+        if v >= -1: return 'color:#9e9e9e'                                          # 관망/눌림목
+        if v >= -4: return 'color:#42a5f5;font-weight:bold'                         # 매도관심
+        return 'color:white;background-color:#1565c0;font-weight:bold'              # 적극매도
     except:
         return ''
 
@@ -471,32 +526,37 @@ def show_styled_dataframe(dataframe):
 # UI
 # ─────────────────────────────────────────────
 
-st.title("🛡️ 스마트 데이터 스캐너 v2")
+st.title("🛡️ 스마트 데이터 스캐너 v3")
 
 # ── 사이드바 ─────────────────────────────────
 st.sidebar.header("설정")
 market         = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
 selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
 
-# 점수 임계값 설명
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
-**📊 종합점수 기준**
-| 점수 | 신호 |
+**📊 7단계 신호 기준**
+
+| 신호 | 의미 |
 |------|------|
-| +5 이상 | 🔥 적극매수 |
-| +2~+4 | 📈 매수관심 |
-| -1~+1 | ⏸️ 관망 |
-| -2~-4 | 📉 매도관심 |
-| -5 이하 | 🧊 적극매도 |
+| 🔥 적극매수 | 눌림목 완료 후 재상승 초입 |
+| 📈 매수관심 | 상승 초입, 안 오른 상태 |
+| 🚀 추세추종 | 이미 올랐지만 추세 강함 ⚠️ |
+| 🔄 눌림목대기 | 구름대 위, 20MA 근처 반등 준비 |
+| ⏸️ 관망 | 방향 불명확 |
+| 📉 매도관심 | 하락 추세 |
+| 🧊 적극매도 | 강한 하락 신호 |
+
+> ⚠️ 추세추종은 이격률 12% 초과  
+> 또는 RSI 70 이상 — 진입 시 손절 필수
 
 **📐 점수 구성**
-- 일목균형표: ±3점
-- MACD: ±2점
-- 이동평균: ±2점
-- RSI: ±2점
-- 거래량: ±1점
-- 장기하락 페널티: -2점
+- 일목균형표 : ±3점
+- MACD       : ±2점
+- 이동평균   : ±2점
+- RSI        : ±2점
+- 거래량     : ±1점
+- 하락페널티 : -2점
 """)
 
 start_btn = st.sidebar.button("🚀 분석 시작")
@@ -506,26 +566,28 @@ st.subheader("📊 진단 및 필터링")
 c1, c2, c3, c4, c5 = st.columns(5)
 total_metric   = c1.empty()
 buy_metric     = c2.empty()
-sell_metric    = c3.empty()
-squeeze_metric = c4.empty()
-rsi_ov_metric  = c5.empty()
+trend_metric   = c3.empty()
+pullback_metric= c4.empty()
+sell_metric    = c5.empty()
 
-total_metric.metric("전체 종목",   "0개")
-buy_metric.metric("매수 관련",     "0개")
-sell_metric.metric("매도 관련",    "0개")
-squeeze_metric.metric("BB수축",    "0개")
-rsi_ov_metric.metric("RSI과매수",  "0개")
+total_metric.metric("전체 종목",  "0개")
+buy_metric.metric("매수관심",     "0개")
+trend_metric.metric("추세추종",   "0개")
+pullback_metric.metric("눌림목대기","0개")
+sell_metric.metric("매도관련",    "0개")
 
-# ── 필터 버튼 ────────────────────────────────
-col1, col2, col3, col4, col5 = st.columns(5)
+# ── 필터 버튼 (7개) ──────────────────────────
+f1, f2, f3, f4, f5, f6, f7 = st.columns(7)
 if 'filter' not in st.session_state:
     st.session_state.filter = "전체"
 
-if col1.button("🔄 전체",       use_container_width=True): st.session_state.filter = "전체"
-if col2.button("🔴 매수관련",   use_container_width=True): st.session_state.filter = "매수"
-if col3.button("🔵 매도관련",   use_container_width=True): st.session_state.filter = "매도"
-if col4.button("⚡ BB수축",     use_container_width=True): st.session_state.filter = "수축"
-if col5.button("🔴 RSI과매수",  use_container_width=True): st.session_state.filter = "과매수"
+if f1.button("🔄 전체",      use_container_width=True): st.session_state.filter = "전체"
+if f2.button("🔥📈 매수관심", use_container_width=True): st.session_state.filter = "매수관심"
+if f3.button("🚀 추세추종",  use_container_width=True): st.session_state.filter = "추세추종"
+if f4.button("🔄 눌림목",    use_container_width=True): st.session_state.filter = "눌림목"
+if f5.button("📉🧊 매도관련", use_container_width=True): st.session_state.filter = "매도"
+if f6.button("⚡ BB수축",    use_container_width=True): st.session_state.filter = "수축"
+if f7.button("🔴 RSI과매수", use_container_width=True): st.session_state.filter = "과매수"
 
 st.markdown("---")
 result_title    = st.empty()
@@ -534,16 +596,24 @@ main_result_area = st.empty()
 
 # ── 분석 시작 ────────────────────────────────
 def update_metrics(df):
-    total_metric.metric("전체 종목",  f"{len(df)}개")
-    buy_metric.metric("매수 관련",    f"{len(df[df['신호'].str.contains('매수')])}개")
-    sell_metric.metric("매도 관련",   f"{len(df[df['신호'].str.contains('매도')])}개")
-    squeeze_metric.metric("BB수축",   f"{len(df[df['BB상태'].str.contains('수축')])}개")
-    rsi_ov_metric.metric("RSI과매수", f"{len(df[df['RSI'].str.contains('과매수')])}개")
+    total_metric.metric("전체 종목",   f"{len(df)}개")
+    buy_metric.metric("매수관심",
+        f"{len(df[df['신호'].str.contains('적극매수|매수관심', regex=True)])}개")
+    trend_metric.metric("추세추종",
+        f"{len(df[df['신호'].str.contains('추세추종')])}개")
+    pullback_metric.metric("눌림목대기",
+        f"{len(df[df['신호'].str.contains('눌림목대기')])}개")
+    sell_metric.metric("매도관련",
+        f"{len(df[df['신호'].str.contains('매도')])}개")
 
 
 def apply_filter(df, f):
-    if f == "매수":
-        return df[df['신호'].str.contains("매수")]
+    if f == "매수관심":
+        return df[df['신호'].str.contains("적극매수|매수관심", regex=True)]
+    elif f == "추세추종":
+        return df[df['신호'].str.contains("추세추종")]
+    elif f == "눌림목":
+        return df[df['신호'].str.contains("눌림목대기")]
     elif f == "매도":
         return df[df['신호'].str.contains("매도")]
     elif f == "수축":
