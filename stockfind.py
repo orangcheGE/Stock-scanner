@@ -659,18 +659,19 @@ def style_rsi(val):
     return ''
 
 
+
 def style_score(val):
     try:
         v = int(val)
-        if v >= 5:  return 'color:white;background-color:#c62828;font-weight:bold'  # 적극매수
-        if v >= 2:  return 'color:#ef5350;font-weight:bold'                         # 매수관심/추세추종
-        if v >= -1: return 'color:#9e9e9e'                                          # 관망/눌림목
-        if v >= -4: return 'color:#42a5f5;font-weight:bold'                         # 매도관심
-        return 'color:white;background-color:#1565c0;font-weight:bold'              # 적극매도
+        if v >= 5:  return 'color:white;background-color:#c62828;font-weight:bold'
+        if v >= 2:  return 'color:#ef5350;font-weight:bold'
+        if v >= -1: return 'color:#9e9e9e'
+        if v >= -4: return 'color:#42a5f5;font-weight:bold'
+        return 'color:white;background-color:#1565c0;font-weight:bold'
     except:
         return ''
 
-
+# *** 수정 1: style_cci 함수 내부의 불필요한 코드 제거 ***
 def style_cci(val):
     v = str(val)
     if '과매도탈출' in v: return 'color:#43a047;font-weight:bold'
@@ -680,13 +681,14 @@ def style_cci(val):
     if '과매수'     in v: return 'color:#e53935'
     if '과매도'     in v: return 'color:#43a047'
     return ''
+
+def style_pct(val):
     v = str(val)
-    if v.startswith('+') or (v[0].isdigit() and float(v.replace('%','')) > 0):
+    if v.startswith('+') or (v.replace('%','').replace('.','',1).isdigit() and float(v.replace('%','')) > 0):
         return 'color:#ef5350'
     if '-' in v:
         return 'color:#42a5f5'
     return ''
-
 
 def compress_display(df: pd.DataFrame) -> pd.DataFrame:
     """
