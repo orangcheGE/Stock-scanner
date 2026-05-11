@@ -681,6 +681,85 @@ main_result_area = st.empty()
 
 # 분석 로직
 def update_metrics(df):
+    if df.empty: return
+    total_metric.metric("전체", f"{len(df)}개")
+    buy_metric.metric("매수계열", f"{len(df[df['신호'].str.contains('적극매수|매수관심', regex=True)])}개")
+    entry_metric.metric("진입준비", f"{len(df[df['신호'].str.contains('진입준비|바닥탐색', regex=True)])}개")
+    caution_metric.metric("구름대주의", f"{len(df[df['신호'].str.contains('구름대주의', regex=True)])}개")
+    fall_metric.metric("하락계열", f"{len(df[df['신호'].str.contains('하락가속|추세하락|적극매도', regex=True)])}개")
+    sell_metric.metric("매도관심↓", f"{len(df[df['신호'].str.contains('매도관심|적극매도', regex=True)])}개")
+
+def apply_filter(df, f):
+    filters = {
+        "매수": "적극매수|매수관심",
+        "진입준비": "진입준비",
+        "바닥탐색": "바닥탐색",
+        "홀딩": "홀딩유지|추세상승",
+        "구름대주의": "구름대주의",
+        "하락가속": "하락가속|추세하락",
+        "매도": "매도",
+    }
+    return df[df['신호'].str.contains(filters[f], regex=True)] if f in filters else df
+
+if start_btn:
+    st.session_state.filter = "전체"
+    market_df = get_market_sum_pages(selected_pages, market)
+    if not market_df.empty:
+        results = []
+        # 'df_all' 세션 상태 초기화
+        st.session_state['df_all'] = pd.DataFrame(columns=COLUMNS)
+        progress_bar = st.progress(0, text="분석 시작...")
+        
+        # for 루프 안에서 화면을 업데이트하도록 로직 복원
+        for i, (_, row) in enumerate(market_df.iterrows()):
+            res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'], fetch_investor=use_investor)
+            if res:
+                results.append(res)
+                # 매번 데이터프레임을 새로 만들고 정렬
+                df_all = pd.DataFrame(results, columns=COLUMNS)
+                df_all = df_all.sort_values('총점', ascending=False).reset_index(drop=True)
+                
+                # 세션 상태에 저장하고 메트릭 및 화면 업데이트
+                st.session_state['df_all'] = df_all
+                update_metrics(df_all)
+                display_df = apply_filter(df_all, st.session_state.filter)
+                
+                result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
+                with main_result_area:
+                    show_styled_dataframe(display_df)
+            
+            # 진행률 표시
+            progress_bar.progress((i + 1) / len(market_df), text=f"분석 중: {row['종목명']} ({i+1}/{len(market_df)})")
+        
+        progress_bar.empty()
+        st.success("✅ 분석 완료!")
+
+# 분석 시작 버튼을 누르지 않았을 때의 동작 (기존과 동일)
+if not start_btn and 'df_all' in st.session_state and not st.session_state['df_all'].empty:
+    df = st.session_state['df_all']
+    display_df = apply_filter(df, st.session_state.filter)
+    update_metrics(df)
+    result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
+    with main_result_area:
+        show_styled_dataframe(display_df)
+    
+    if not display_df.empty:
+        email_summary = display_df[['종목명', '현재가', '총점', '신호', '일목(일봉)', 'RSI']].to_string(index=False)
+        encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
+        mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
+        st.markdown(
+            f'<a href="{mailto_url}" target="_self" style="text-decoration:none;">'
+            f'<div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;'
+            f'text-align:center;font-weight:bold;">📧 현재 리스트 Outlook 전송</div></a>',
+            unsafe_allow_html=True
+        )
+
+elif 'df_all' not in st.session_state or st.session_state['df_all'].empty:
+    with main_result_area:
+        st.info("왼쪽 사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
+# 분석 로직
+def update_metrics(df):
     total_metric.metric("전체", f"{len(df)}개")
     buy_metric.metric("매수계열", f"{len(df[df['신호'].str.contains('적극매수|매수관심')])}개")
     entry_metric.metric("진입준비", f"{len(df[df['신호'].str.contains('진입준비|바닥탐색')])}개")
