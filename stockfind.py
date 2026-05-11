@@ -71,44 +71,41 @@ def get_price_data(code, max_pages=30):
 
 def get_investor_data(code):
     """
-    (최종 해결안) 가장 안전한 방식으로 '외국인지분율'을 찾는 함수.
-    페이지의 모든 행(tr)을 순회하며 '외국인지분율' 텍스트를 가진 행을 찾아 값을 추출합니다.
+    (최종 해결안 - 정규표현식) HTML 구조를 무시하고, '외국인지분율' 텍스트
+    패턴 주변에서 '%'로 끝나는 숫자 값을 직접 찾아냅니다.
     """
     url = f"https://finance.naver.com/item/coinfo.naver?code={code}"
     try:
         res = requests.get(url, headers=get_headers(), timeout=8)
         res.encoding = 'euc-kr'
-        soup = BeautifulSoup(res.text, 'html.parser')
+        html_text = res.text # 페이지의 전체 HTML을 텍스트로 가져옵니다.
 
-        # 1. 페이지에 있는 모든 <tr> (테이블의 한 줄) 태그를 가져옵니다.
-        all_rows = soup.find_all('tr')
+        # 1. 정규표현식 패턴을 정의합니다.
+        # 패턴 의미: '외국인지분율' 글자 이후에, '숫자.숫자%' 형태의 첫 번째 값을 찾는다.
+        # ( ) 안의 내용이 우리가 실제로 가져올 값입니다.
+        pattern = r"외국인지분율(?:[\s\S]*?)(\d+\.\d+)%"
 
-        # 2. 가져온 모든 행을 하나씩 확인합니다.
-        for row in all_rows:
-            # 3. 행(row) 안에 <th> 태그가 있는지, 그리고 그 태그의 텍스트가 정확히 '외국인지분율'인지 확인합니다.
-            header = row.find('th')
-            if header and header.get_text(strip=True) == '외국인지분율':
-                
-                # 4. '외국인지분율'을 찾았다면, 바로 그 행(row) 안에서 <td> 태그를 찾습니다.
-                value_cell = row.find('td')
-                if value_cell:
-                    # 5. 값을 찾았으므로, 파싱하여 즉시 반환하고 함수를 종료합니다.
-                    val = value_cell.get_text(strip=True).replace('%', '').replace(',', '')
-                    try:
-                        ratio = float(val)
-                        return ratio, _fmt_ratio(ratio)
-                    except (ValueError, TypeError):
-                        # 값을 숫자로 바꿀 수 없으면, 그냥 함수를 종료하고 기본값을 반환합니다.
-                        return 0.0, "-"
+        # 2. 전체 HTML 텍스트에서 패턴을 검색합니다.
+        match = re.search(pattern, html_text)
+
+        # 3. 패턴에 일치하는 값을 찾았다면...
+        if match:
+            # 첫 번째 괄호() 그룹에 해당하는 값('27.39' 등)을 가져옵니다.
+            val = match.group(1)
+            try:
+                ratio = float(val)
+                return ratio, _fmt_ratio(ratio)
+            except (ValueError, TypeError):
+                # 값을 찾았으나 숫자로 변환 실패 시
+                pass
 
     except Exception:
-        # 에러 발생 시 기본값을 반환합니다.
+        # 요청/처리 중 에러 발생 시
         pass
 
-    # for 루프를 다 돌았는데도 값을 찾지 못했다면, 기본값을 반환합니다.
+    # 모든 과정에서 값을 찾지 못하면 기본값을 반환합니다.
     return 0.0, "-"
-
-
+    
 def _fmt_ratio(ratio: float) -> str:
     """외국인 지분율 표시 문자열 생성"""
     if ratio >= 30:
