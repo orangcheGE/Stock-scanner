@@ -71,6 +71,95 @@ def get_price_data(code, max_pages=30):
     return df.dropna(subset=['날짜', '종가']).sort_values('날짜').reset_index(drop=True)
 
 
+def get_investor_data(code):
+    """
+    네이버 금융 투자자별 매매동향 크롤링
+    → 최근 5일 외국인·기관 순매수 합산 반환
+    반환: (외국인_5일합계, 기관_5일합계, 표시문자열)
+    """
+    url = f"https://finance.naver.com/item/forkbuy.naver?code={code}"
+    try:
+        res = requests.get(url, headers=get_headers(), timeout=8)
+        res.encoding = 'euc-kr'
+        tables = pd.read_html(io.StringIO(res.text))
+        for t in tables:
+            # 외국인·기관 컬럼이 있는 테이블 찾기
+            cols = [str(c).strip() for c in t.columns]
+            if any('외국인' in c for c in cols):
+                t.columns = cols
+                # 숫자 정제
+                for col in t.columns:
+                    if col != t.columns[0]:
+                        t[col] = pd.to_numeric(
+                            t[col].astype(str).str.replace(',','').str.replace('+',''),
+                            errors='coerce'
+                        )
+                foreign_col = next((c for c in cols if '외국인' in c), None)
+                organ_col   = next((c for c in cols if '기관' in c), None)
+                t = t.dropna(how='all').head(5)
+                f_sum = int(t[foreign_col].sum()) if foreign_col else 0
+                o_sum = int(t[organ_col].sum())   if organ_col   else 0
+
+                def _fmt(v):
+                    if v > 0:   return f"+{v:,} 🔴"
+                    elif v < 0: return f"{v:,} 🔵"
+                    else:       return "0"
+
+                display = f"외:{_fmt(f_sum)} 기:{_fmt(o_sum)}"
+                return f_sum, o_sum, display
+    except Exception:
+        pass
+    return 0, 0, "조회불가"
+
+
+def get_52week_status(price_series, current_price):
+    """
+    52주 고가/저가 대비 현재가 위치
+    → (52주고가대비%, 표시문자열)
+    """
+    try:
+        high_52 = price_series.rolling(252).max().iloc[-1]
+        low_52  = price_series.rolling(252).min().iloc[-1]
+        if pd.isna(high_52) or high_52 == 0:
+            return 0, "-"
+        pct_from_high = ((current_price - high_52) / high_52) * 100
+        pct_from_low  = ((current_price - low_52)  / low_52)  * 100
+        pct_h = round(pct_from_high, 1)
+        pct_l = round(pct_from_low,  1)
+
+        if pct_from_high >= -3:          # 52주 신고가 근접 (3% 이내)
+            label = f"🚀신고가({pct_h}%)"
+        elif pct_from_high >= -10:
+            label = f"📈고점근접({pct_h}%)"
+        elif pct_from_low <= 5:          # 52주 신저가 근접
+            label = f"💧저점근접(+{pct_l}%)"
+        else:
+            label = f"고:{pct_h}% 저:+{pct_l}%"
+        return pct_from_high, label
+    except Exception:
+        return 0, "-"
+
+
+def get_ma5_slope(price_series):
+    """
+    5MA 기울기 — 최근 3일 기울기로 단기 모멘텀 방향 판단
+    양수 = 상승 중, 음수 = 하락 중
+    """
+    try:
+        ma5 = price_series.rolling(5).mean()
+        if len(ma5) < 4:
+            return 0, "➖"
+        slope = ma5.iloc[-1] - ma5.iloc[-3]   # 2거래일 기울기
+        pct   = slope / ma5.iloc[-3] * 100 if ma5.iloc[-3] != 0 else 0
+        if pct > 0.5:    return pct, f"↗↗급등({round(pct,1)}%)"
+        elif pct > 0.1:  return pct, f"↗상승({round(pct,1)}%)"
+        elif pct < -0.5: return pct, f"↘↘급락({round(pct,1)}%)"
+        elif pct < -0.1: return pct, f"↘하락({round(pct,1)}%)"
+        else:            return pct, f"➖횡보({round(pct,1)}%)"
+    except Exception:
+        return 0, "➖"
+
+
 # ─────────────────────────────────────────────
 # 지표 계산
 # ─────────────────────────────────────────────
@@ -134,7 +223,10 @@ def get_bb_squeeze_status(bandwidth_series):
 
 def calc_signal_score(last, prev, ichimoku_status,
                       rsi_val, cci_now, cci_prev,
-                      disparity, bw_series, price_col='종가'):
+                      disparity, bw_series,
+                      foreign_sum=0, organ_sum=0,
+                      ma5_slope=0, pct_from_52high=0,
+                      price_col='종가'):
     """
     전환 시점 포착 중심 — 엄격한 12단계 신호 시스템
     ════════════════════════════════════════════════
@@ -291,6 +383,52 @@ def calc_signal_score(last, prev, ichimoku_status,
     detail['거래량'] = s
 
     # ══════════════════════════════════════════
+    # ⑥ 외국인 순매수 (5일 합산) — 스마트머니 추적
+    # ══════════════════════════════════════════
+    # 외국인+기관이 동시에 순매수 → 강한 확인 신호
+    smart_money = foreign_sum + organ_sum
+    if foreign_sum > 0 and organ_sum > 0:
+        s = 2    # 외국인·기관 동시 순매수 → 가장 강한 확인
+    elif foreign_sum > 0 or organ_sum > 0:
+        s = 1    # 둘 중 하나 순매수
+    elif foreign_sum < 0 and organ_sum < 0:
+        s = -2   # 동시 순매도 → 위험
+    elif foreign_sum < 0 or organ_sum < 0:
+        s = -1   # 둘 중 하나 순매도
+    else:
+        s = 0
+    score += s
+    detail['스마트머니'] = s
+
+    # ══════════════════════════════════════════
+    # ⑦ 5MA 기울기 — 단기 모멘텀 확인
+    # ══════════════════════════════════════════
+    # 전환 신호가 있을 때 방향이 맞으면 보강, 역방향이면 페널티
+    if ma5_slope > 0.3 and detail['구름대'] >= 0:
+        s = 1    # 상승 모멘텀 확인
+    elif ma5_slope < -0.3 and detail['구름대'] <= 0:
+        s = -1   # 하락 모멘텀 확인
+    else:
+        s = 0
+    score += s
+    detail['5MA기울기'] = s
+
+    # ══════════════════════════════════════════
+    # ⑧ 52주 위치 보정
+    # ══════════════════════════════════════════
+    # 신고가 근접(3% 이내): 강한 추세 → 추세상승 강화 / 신규매수는 주의
+    # 신저가 근접: 반등 기대 but 추세 약함 → 바닥탐색 신호 강화
+    if pct_from_52high >= -3:
+        # 신고가권: 추세상승 확인 신호지만 신규진입 부담 → 이격률 페널티와 동일 방향
+        s = 0    # 중립 (이격률에서 이미 반영)
+    elif pct_from_52high <= -30:
+        s = 1    # 많이 내려온 상태 → 바닥탐색 가능성 (단, 추세 확인 필수)
+    else:
+        s = 0
+    score += s
+    detail['52주위치'] = s
+
+    # ══════════════════════════════════════════
     # 조건 플래그 (신호 결정에 사용)
     # ══════════════════════════════════════════
     is_above_cloud   = '구름대 위'  in ichimoku_status or '상향돌파' in ichimoku_status
@@ -398,7 +536,7 @@ def calc_signal_score(last, prev, ichimoku_status,
 # 종목 분석 메인
 # ─────────────────────────────────────────────
 
-def analyze_stock(code, name, current_change):
+def analyze_stock(code, name, current_change, fetch_investor=True):
     try:
         df_price = get_price_data(code, max_pages=25)
         if df_price is None or len(df_price) < 80:
@@ -586,11 +724,27 @@ def analyze_stock(code, name, current_change):
         disparity = ((last['종가'] / last['20MA']) - 1) * 100 if last['20MA'] > 0 else 0
         disparity_fmt = f"{'+' if disparity >= 0 else ''}{round(disparity, 2)}%"
 
+        # ── 52주 고저 위치 ───────────────────
+        pct_52high, week52_display = get_52week_status(df['종가'], last['종가'])
+
+        # ── 5MA 기울기 ───────────────────────
+        ma5_slope, slope_display = get_ma5_slope(df['종가'])
+
+        # ── 외국인·기관 순매수 (5일) ─────────
+        if fetch_investor:
+            foreign_sum, organ_sum, investor_display = get_investor_data(code)
+        else:
+            foreign_sum, organ_sum, investor_display = 0, 0, "-"
+
         # ── 점수 기반 종합 신호 ──────────────
         score, signal, detail = calc_signal_score(
             last, prev, ichimoku_status,
             rsi_val, cci_now, cci_prev,
-            disparity, df_final['BB_width']
+            disparity, df_final['BB_width'],
+            foreign_sum=foreign_sum,
+            organ_sum=organ_sum,
+            ma5_slope=ma5_slope,
+            pct_from_52high=pct_52high
         )
 
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
@@ -601,6 +755,7 @@ def analyze_stock(code, name, current_change):
             score, signal,
             ichimoku_status, ma_text,
             rsi_display, cci_display, bb_display, vol_display,
+            investor_display, slope_display, week52_display,
             chart_url
         ]
 
@@ -615,7 +770,9 @@ def analyze_stock(code, name, current_change):
 COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
            '총점', '신호',
            '일목(일봉)', 'MA크로스',
-           'RSI', 'CCI', 'BB상태', '거래량', '차트']
+           'RSI', 'CCI', 'BB상태', '거래량',
+           '외인/기관(5일)', '5MA기울기', '52주위치',
+           '차트']
 
 
 def style_signal(val):
@@ -659,19 +816,18 @@ def style_rsi(val):
     return ''
 
 
-
 def style_score(val):
     try:
         v = int(val)
-        if v >= 5:  return 'color:white;background-color:#c62828;font-weight:bold'
-        if v >= 2:  return 'color:#ef5350;font-weight:bold'
-        if v >= -1: return 'color:#9e9e9e'
-        if v >= -4: return 'color:#42a5f5;font-weight:bold'
-        return 'color:white;background-color:#1565c0;font-weight:bold'
+        if v >= 5:  return 'color:white;background-color:#c62828;font-weight:bold'  # 적극매수
+        if v >= 2:  return 'color:#ef5350;font-weight:bold'                         # 매수관심/추세추종
+        if v >= -1: return 'color:#9e9e9e'                                          # 관망/눌림목
+        if v >= -4: return 'color:#42a5f5;font-weight:bold'                         # 매도관심
+        return 'color:white;background-color:#1565c0;font-weight:bold'              # 적극매도
     except:
         return ''
 
-# *** 수정 1: style_cci 함수 내부의 불필요한 코드 제거 ***
+
 def style_cci(val):
     v = str(val)
     if '과매도탈출' in v: return 'color:#43a047;font-weight:bold'
@@ -681,14 +837,13 @@ def style_cci(val):
     if '과매수'     in v: return 'color:#e53935'
     if '과매도'     in v: return 'color:#43a047'
     return ''
-
-def style_pct(val):
     v = str(val)
-    if v.startswith('+') or (v.replace('%','').replace('.','',1).isdigit() and float(v.replace('%','')) > 0):
+    if v.startswith('+') or (v[0].isdigit() and float(v.replace('%','')) > 0):
         return 'color:#ef5350'
     if '-' in v:
         return 'color:#42a5f5'
     return ''
+
 
 def compress_display(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -750,15 +905,43 @@ def compress_display(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
+def style_investor(val):
+    """외인/기관 순매수 색상"""
+    v = str(val)
+    if '🔴' in v and v.count('🔴') == 2: return 'color:#b71c1c;font-weight:bold'  # 둘 다 순매수
+    if '🔴' in v:                          return 'color:#ef5350'
+    if '🔵' in v and v.count('🔵') == 2: return 'color:#0d47a1;font-weight:bold'  # 둘 다 순매도
+    if '🔵' in v:                          return 'color:#42a5f5'
+    return 'color:#9e9e9e'
+
+def style_slope(val):
+    v = str(val)
+    if '급등' in v: return 'color:#b71c1c;font-weight:bold'
+    if '상승' in v: return 'color:#ef5350'
+    if '급락' in v: return 'color:#0d47a1;font-weight:bold'
+    if '하락' in v: return 'color:#42a5f5'
+    return 'color:#9e9e9e'
+
+def style_52week(val):
+    v = str(val)
+    if '신고가' in v: return 'color:#b71c1c;font-weight:bold'
+    if '고점근접' in v: return 'color:#ef5350'
+    if '저점근접' in v: return 'color:#1565c0;font-weight:bold'
+    return ''
+
+
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다.")
         return
 
-    # 표시용 압축본 (스타일링·필터는 원본 기준이므로 별도 적용)
     disp = compress_display(dataframe)
-
     dynamic_height = (len(disp) + 1) * 35 + 3
+
+    # 존재하는 컬럼만 스타일 적용 (컬럼 없으면 에러 방지)
+    has_investor = '외인/기관(5일)' in disp.columns
+    has_slope    = '5MA기울기'      in disp.columns
+    has_52w      = '52주위치'       in disp.columns
 
     styled = (
         disp.style
@@ -768,39 +951,50 @@ def show_styled_dataframe(dataframe):
         .map(style_cci,      subset=['CCI'])
         .map(style_score,    subset=['총점'])
         .map(style_pct,      subset=['등락률', '이격률'])
-        .map(lambda x: 'color:#ef5350;font-weight:bold' if '🔥' in str(x)
-             else ('color:#42a5f5;font-weight:bold' if '🧊' in str(x)
-             else ('color:#ef5350' if '📈' in str(x)
-             else ('color:#42a5f5' if '📉' in str(x) else ''))),
+        .map(lambda x: ('color:#ef5350;font-weight:bold' if '🔥' in str(x) else
+                        'color:#42a5f5;font-weight:bold' if '🧊' in str(x) else
+                        'color:#ef5350' if '📈' in str(x) else
+                        'color:#42a5f5' if '📉' in str(x) else ''),
              subset=['MA크로스'])
-        .map(lambda x: 'color:#ef9a00;font-weight:bold' if '⚡' in str(x)
-             else ('color:#26a69a;font-weight:bold' if '💥' in str(x) else ''),
+        .map(lambda x: ('color:#ef9a00;font-weight:bold' if '⚡' in str(x) else
+                        'color:#26a69a;font-weight:bold' if '💥' in str(x) else ''),
              subset=['BB상태'])
-        .map(lambda x: 'color:#ef5350' if '📈' in str(x)
-             else ('color:#64b5f6' if '📉' in str(x) else ''),
+        .map(lambda x: ('color:#ef5350' if '📈' in str(x) else
+                        'color:#64b5f6' if '📉' in str(x) else ''),
              subset=['거래량'])
     )
+    if has_investor:
+        styled = styled.map(style_investor, subset=['외인/기관(5일)'])
+    if has_slope:
+        styled = styled.map(style_slope,    subset=['5MA기울기'])
+    if has_52w:
+        styled = styled.map(style_52week,   subset=['52주위치'])
+
+    col_cfg = {
+        "코드":        st.column_config.TextColumn("코드",    width="small"),
+        "총점":        st.column_config.NumberColumn("점수",  width="small"),
+        "등락률":      st.column_config.TextColumn("등락",    width="small"),
+        "이격률":      st.column_config.TextColumn("이격",    width="small"),
+        "거래량":      st.column_config.TextColumn("거래량",  width="small"),
+        "차트":        st.column_config.LinkColumn("차트",    width="small", display_text="📊"),
+        "신호":        st.column_config.TextColumn("신호",    width="medium"),
+        "일목(일봉)":  st.column_config.TextColumn("일목",    width="medium"),
+        "MA크로스":    st.column_config.TextColumn("MA",      width="medium"),
+        "RSI":         st.column_config.TextColumn("RSI",     width="small"),
+        "CCI":         st.column_config.TextColumn("CCI",     width="medium"),
+        "BB상태":      st.column_config.TextColumn("BB",      width="small"),
+        "종목명":      st.column_config.TextColumn("종목명",  width="medium"),
+        "현재가":      st.column_config.NumberColumn("현재가",width="small"),
+        "외인/기관(5일)": st.column_config.TextColumn("외인/기관",  width="medium"),
+        "5MA기울기":   st.column_config.TextColumn("5MA방향", width="small"),
+        "52주위치":    st.column_config.TextColumn("52주",    width="medium"),
+    }
 
     st.dataframe(
         styled,
         use_container_width=True,
         height=dynamic_height,
-        column_config={
-            "코드":     st.column_config.TextColumn("코드",   width="small"),
-            "총점":     st.column_config.NumberColumn("점수", width="small"),
-            "등락률":   st.column_config.TextColumn("등락",   width="small"),
-            "이격률":   st.column_config.TextColumn("이격",   width="small"),
-            "거래량":   st.column_config.TextColumn("거래량", width="small"),
-            "차트":     st.column_config.LinkColumn("차트",   width="small", display_text="📊"),
-            "신호":     st.column_config.TextColumn("신호",   width="medium"),
-            "일목(일봉)":st.column_config.TextColumn("일목",  width="medium"),
-            "MA크로스": st.column_config.TextColumn("MA",     width="medium"),
-            "RSI":      st.column_config.TextColumn("RSI",    width="small"),
-            "CCI":      st.column_config.TextColumn("CCI",    width="medium"),
-            "BB상태":   st.column_config.TextColumn("BB",     width="small"),
-            "종목명":   st.column_config.TextColumn("종목명", width="medium"),
-            "현재가":   st.column_config.NumberColumn("현재가",width="small"),
-        },
+        column_config=col_cfg,
         hide_index=True
     )
 
@@ -809,12 +1003,19 @@ def show_styled_dataframe(dataframe):
 # UI
 # ─────────────────────────────────────────────
 
-st.title("🛡️ 스마트 데이터 스캐너 v3")
+st.title("🛡️ 스마트 데이터 스캐너 v4")
 
 # ── 사이드바 ─────────────────────────────────
 st.sidebar.header("설정")
 market         = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
 selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
+
+st.sidebar.markdown("---")
+use_investor = st.sidebar.checkbox(
+    "📡 외인/기관 순매수 수집",
+    value=True,
+    help="종목당 추가 요청 1회 → 분석 시간 약 30% 증가"
+)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
@@ -845,12 +1046,15 @@ st.sidebar.markdown("""
 | 📉 매도관심 | 하락전환 총점≤-3 |
 | 🧊 적극매도 | 이탈+동시하락 총점≤-5 |
 
-**📐 점수 구성**
+**📐 점수 구성 (v4)**
 - 구름대 돌파/진입방향 : ±3
 - MACD 전환·기울기    : ±2
 - CCI 전환            : ±2
 - 이격률              : ±3
-- 거래량 확인         : ±1
+- 거래량              : ±1
+- **외인/기관 순매수  : ±2** ← NEW
+- **5MA 기울기        : ±1** ← NEW
+- **52주 위치 보정    : ±1** ← NEW
 """)
 
 start_btn = st.sidebar.button("🚀 분석 시작")
@@ -937,7 +1141,8 @@ if start_btn:
         progress_bar = st.progress(0, text="분석 시작...")
 
         for i, (_, row) in enumerate(market_df.iterrows()):
-            res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
+            res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'],
+                                fetch_investor=use_investor)
             if res:
                 results.append(res)
                 df_all = pd.DataFrame(results, columns=COLUMNS)
@@ -983,4 +1188,3 @@ if not start_btn and 'df_all' in st.session_state:
 elif 'df_all' not in st.session_state:
     with main_result_area:
         st.info("왼쪽 사이드바에서 '분석 시작' 버튼을 눌러주세요.")
-
