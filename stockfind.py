@@ -71,8 +71,8 @@ def get_price_data(code, max_pages=30):
 
 def get_investor_data(code):
     """
-    네이버 금융의 PC/모바일 등 다양한 HTML 구조에 모두 대응하여
-    외국인 지분율을 찾는 최종 강화 버전의 함수.
+    (최종 해결안) 가장 안전한 방식으로 '외국인지분율'을 찾는 함수.
+    페이지의 모든 행(tr)을 순회하며 '외국인지분율' 텍스트를 가진 행을 찾아 값을 추출합니다.
     """
     url = f"https://finance.naver.com/item/coinfo.naver?code={code}"
     try:
@@ -80,42 +80,34 @@ def get_investor_data(code):
         res.encoding = 'euc-kr'
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # --- 방법 1: <th> 태그 기반 검색 (PC 버전 HTML 대응) ---
-        # '외국인지분율' 텍스트를 가진 <th>를 먼저 찾는다.
-        foreign_ratio_th = soup.find('th', string=lambda t: t and t.strip() == '외국인지분율')
-        if foreign_ratio_th:
-            value_td = foreign_ratio_th.find_next_sibling('td')
-            if value_td:
-                val = value_td.get_text(strip=True).replace('%', '').replace(',', '')
-                try:
-                    ratio = float(val)
-                    return ratio, _fmt_ratio(ratio)
-                except (ValueError, TypeError):
-                    pass # 실패 시 방법 2로 넘어감
+        # 1. 페이지에 있는 모든 <tr> (테이블의 한 줄) 태그를 가져옵니다.
+        all_rows = soup.find_all('tr')
 
-        # --- 방법 2: 다른 테이블 구조 및 태그 기반 검색 (동적 HTML 대응) ---
-        # 모든 테이블과 모든 행을 순회하며 '외국인' 키워드를 찾는다.
-        all_tables = soup.find_all('table')
-        for table in all_tables:
-            for row in table.find_all('tr'):
-                # '외국인'이라는 텍스트가 포함된 모든 셀(th, td)을 찾는다.
-                header_cell = row.find(['th', 'td'], string=lambda t: t and '외국인' in t.strip())
-                if header_cell:
-                    # 해당 셀의 바로 다음 형제 셀에서 값을 찾는다.
-                    value_cell = header_cell.find_next_sibling('td')
-                    if value_cell:
-                        val = value_cell.get_text(strip=True).split('/')[0].strip() # "27.39% / 어쩌고" 같은 형태 대비
-                        val = val.replace('%', '').replace(',', '')
-                        try:
-                            ratio = float(val)
-                            return ratio, _fmt_ratio(ratio)
-                        except (ValueError, TypeError):
-                            continue # 실패 시 다음 행으로
-                            
+        # 2. 가져온 모든 행을 하나씩 확인합니다.
+        for row in all_rows:
+            # 3. 행(row) 안에 <th> 태그가 있는지, 그리고 그 태그의 텍스트가 정확히 '외국인지분율'인지 확인합니다.
+            header = row.find('th')
+            if header and header.get_text(strip=True) == '외국인지분율':
+                
+                # 4. '외국인지분율'을 찾았다면, 바로 그 행(row) 안에서 <td> 태그를 찾습니다.
+                value_cell = row.find('td')
+                if value_cell:
+                    # 5. 값을 찾았으므로, 파싱하여 즉시 반환하고 함수를 종료합니다.
+                    val = value_cell.get_text(strip=True).replace('%', '').replace(',', '')
+                    try:
+                        ratio = float(val)
+                        return ratio, _fmt_ratio(ratio)
+                    except (ValueError, TypeError):
+                        # 값을 숫자로 바꿀 수 없으면, 그냥 함수를 종료하고 기본값을 반환합니다.
+                        return 0.0, "-"
+
     except Exception:
+        # 에러 발생 시 기본값을 반환합니다.
         pass
-        # 모든 방법이 실패한 경우 기본값을 반환한다.
+
+    # for 루프를 다 돌았는데도 값을 찾지 못했다면, 기본값을 반환합니다.
     return 0.0, "-"
+
 
 def _fmt_ratio(ratio: float) -> str:
     """외국인 지분율 표시 문자열 생성"""
