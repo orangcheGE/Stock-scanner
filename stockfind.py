@@ -837,11 +837,24 @@ def style_cci(val):
     if '과매수'     in v: return 'color:#e53935'
     if '과매도'     in v: return 'color:#43a047'
     return ''
-    v = str(val)
-    if v.startswith('+') or (v[0].isdigit() and float(v.replace('%','')) > 0):
-        return 'color:#ef5350'
-    if '-' in v:
-        return 'color:#42a5f5'
+
+
+def style_pct(val):
+    """등락률·이격률 색상 — 양수 빨강, 음수 파랑"""
+    v = str(val).strip()
+    if not v or v == '-':
+        return ''
+    try:
+        if v.startswith('+'):
+            return 'color:#ef5350'
+        if v.startswith('-'):
+            return 'color:#42a5f5'
+        # % 기호 제거 후 숫자 판별
+        num = float(v.replace('%', '').replace(',', ''))
+        if num > 0:  return 'color:#ef5350'
+        if num < 0:  return 'color:#42a5f5'
+    except Exception:
+        pass
     return ''
 
 
