@@ -73,43 +73,104 @@ def get_price_data(code, max_pages=30):
 
 def get_investor_data(code):
     """
-    네이버 금융 투자자별 매매동향 크롤링
-    → 최근 5일 외국인·기관 순매수 합산 반환
-    반환: (외국인_5일합계, 기관_5일합계, 표시문자열)
+    네이버 금융 종목 기본정보 페이지에서 외국인 지분율 크롤링
+    URL: https://finance.naver.com/item/coinfo.naver?code={code}
+
+    반환: (외국인지분율_float, 표시문자열)
+    예시: (12.34, "12.34% 🔴")
+
+    ※ 순매수 동향(forkbuy)은 iframe 구조로 직접 접근 불안정
+      → coinfo의 지분율이 더 안정적이고 의미 있는 지표
     """
-    url = f"https://finance.naver.com/item/forkbuy.naver?code={code}"
+    url = f"https://finance.naver.com/item/coinfo.naver?code={code}"
     try:
         res = requests.get(url, headers=get_headers(), timeout=8)
         res.encoding = 'euc-kr'
-        tables = pd.read_html(io.StringIO(res.text))
-        for t in tables:
-            # 외국인·기관 컬럼이 있는 테이블 찾기
-            cols = [str(c).strip() for c in t.columns]
-            if any('외국인' in c for c in cols):
-                t.columns = cols
-                # 숫자 정제
-                for col in t.columns:
-                    if col != t.columns[0]:
-                        t[col] = pd.to_numeric(
-                            t[col].astype(str).str.replace(',','').str.replace('+',''),
-                            errors='coerce'
-                        )
-                foreign_col = next((c for c in cols if '외국인' in c), None)
-                organ_col   = next((c for c in cols if '기관' in c), None)
-                t = t.dropna(how='all').head(5)
-                f_sum = int(t[foreign_col].sum()) if foreign_col else 0
-                o_sum = int(t[organ_col].sum())   if organ_col   else 0
+        soup = BeautifulSoup(res.text, 'html.parser')
 
-                def _fmt(v):
-                    if v > 0:   return f"+{v:,} 🔴"
-                    elif v < 0: return f"{v:,} 🔵"
-                    else:       return "0"
+        # ── 방법1: summary_info 테이블에서 외국인 지분율 파싱 ──
+        # 네이버 금융 coinfo 페이지 구조:
+        # <table class="lwidth"> ... <em id="em_000000_SHR_FLOAT">12.34</em> ...
+        # 또는 <td>외국인</td><td>12.34%</td> 형태
 
-                display = f"외:{_fmt(f_sum)} 기:{_fmt(o_sum)}"
-                return f_sum, o_sum, display
+        # em 태그로 직접 찾기 (가장 안정적)
+        for em in soup.find_all('em'):
+            em_id = em.get('id', '')
+            if 'SHR_FLOAT' in em_id or 'foreigner' in em_id.lower():
+                val = em.get_text(strip=True).replace('%', '').replace(',', '')
+                try:
+                    ratio = float(val)
+                    return ratio, _fmt_ratio(ratio)
+                except ValueError:
+                    pass
+
+        # ── 방법2: 테이블에서 "외국인" 키워드 옆 값 파싱 ──
+        tables = soup.find_all('table')
+        for table in tables:
+            rows = table.find_all('tr')
+            for row in rows:
+                tds = row.find_all('td')
+                for i, td in enumerate(tds):
+                    txt = td.get_text(strip=True)
+                    if txt in ('외국인', '외국인지분율', '외국인 지분율'):
+                        # 바로 다음 td에 값이 있음
+                        if i + 1 < len(tds):
+                            val = tds[i+1].get_text(strip=True)
+                            val = val.replace('%','').replace(',','').strip()
+                            try:
+                                ratio = float(val)
+                                return ratio, _fmt_ratio(ratio)
+                            except ValueError:
+                                pass
+
+        # ── 방법3: read_html로 테이블 전체 파싱 ──
+        try:
+            dfs = pd.read_html(io.StringIO(res.text))
+            for df in dfs:
+                # 외국인 컬럼 또는 행 찾기
+                for col in df.columns:
+                    if '외국인' in str(col):
+                        val = df[col].dropna().iloc[0] if not df[col].dropna().empty else None
+                        if val is not None:
+                            v = str(val).replace('%','').replace(',','').strip()
+                            try:
+                                ratio = float(v)
+                                return ratio, _fmt_ratio(ratio)
+                            except ValueError:
+                                pass
+                # 행에서 찾기
+                for _, row in df.iterrows():
+                    for cell in row:
+                        if '외국인' in str(cell):
+                            # 같은 행의 다음 셀에 값
+                            vals = list(row)
+                            idx = vals.index(cell)
+                            if idx + 1 < len(vals):
+                                v = str(vals[idx+1]).replace('%','').replace(',','').strip()
+                                try:
+                                    ratio = float(v)
+                                    return ratio, _fmt_ratio(ratio)
+                                except ValueError:
+                                    pass
+        except Exception:
+            pass
+
     except Exception:
         pass
-    return 0, 0, "조회불가"
+
+    return 0.0, "-"
+
+
+def _fmt_ratio(ratio: float) -> str:
+    """외국인 지분율 표시 문자열 생성"""
+    if ratio >= 30:
+        return f"{ratio:.2f}% 🔴고비중"
+    elif ratio >= 15:
+        return f"{ratio:.2f}% 🟠중비중"
+    elif ratio >= 5:
+        return f"{ratio:.2f}% 🟡저비중"
+    else:
+        return f"{ratio:.2f}% ⚪미미"
 
 
 def get_52week_status(price_series, current_price):
@@ -224,7 +285,7 @@ def get_bb_squeeze_status(bandwidth_series):
 def calc_signal_score(last, prev, ichimoku_status,
                       rsi_val, cci_now, cci_prev,
                       disparity, bw_series,
-                      foreign_sum=0, organ_sum=0,
+                      foreign_ratio=0.0,
                       ma5_slope=0, pct_from_52high=0,
                       price_col='종가'):
     """
@@ -383,22 +444,21 @@ def calc_signal_score(last, prev, ichimoku_status,
     detail['거래량'] = s
 
     # ══════════════════════════════════════════
-    # ⑥ 외국인 순매수 (5일 합산) — 스마트머니 추적
+    # ⑥ 외국인 지분율 — 스마트머니 비중 판단
     # ══════════════════════════════════════════
-    # 외국인+기관이 동시에 순매수 → 강한 확인 신호
-    smart_money = foreign_sum + organ_sum
-    if foreign_sum > 0 and organ_sum > 0:
-        s = 2    # 외국인·기관 동시 순매수 → 가장 강한 확인
-    elif foreign_sum > 0 or organ_sum > 0:
-        s = 1    # 둘 중 하나 순매수
-    elif foreign_sum < 0 and organ_sum < 0:
-        s = -2   # 동시 순매도 → 위험
-    elif foreign_sum < 0 or organ_sum < 0:
-        s = -1   # 둘 중 하나 순매도
+    # 지분율 높을수록 외국인이 장기적으로 신뢰하는 종목
+    # 30% 이상 → 외국인 선호 우량주 (+1 보정)
+    # 단독 점수보다는 다른 신호의 신뢰도 보강 역할
+    if foreign_ratio >= 30:
+        s = 1    # 외국인 고비중 → 신호 신뢰도 상승
+    elif foreign_ratio >= 15:
+        s = 0    # 중간 비중 → 중립
+    elif foreign_ratio > 0 and foreign_ratio < 5:
+        s = -1   # 외국인 외면 종목 → 신호 신뢰도 하락
     else:
         s = 0
     score += s
-    detail['스마트머니'] = s
+    detail['외국인지분'] = s
 
     # ══════════════════════════════════════════
     # ⑦ 5MA 기울기 — 단기 모멘텀 확인
@@ -730,19 +790,18 @@ def analyze_stock(code, name, current_change, fetch_investor=True):
         # ── 5MA 기울기 ───────────────────────
         ma5_slope, slope_display = get_ma5_slope(df['종가'])
 
-        # ── 외국인·기관 순매수 (5일) ─────────
+        # ── 외국인 지분율 ────────────────────
         if fetch_investor:
-            foreign_sum, organ_sum, investor_display = get_investor_data(code)
+            foreign_ratio, investor_display = get_investor_data(code)
         else:
-            foreign_sum, organ_sum, investor_display = 0, 0, "-"
+            foreign_ratio, investor_display = 0.0, "-"
 
         # ── 점수 기반 종합 신호 ──────────────
         score, signal, detail = calc_signal_score(
             last, prev, ichimoku_status,
             rsi_val, cci_now, cci_prev,
             disparity, df_final['BB_width'],
-            foreign_sum=foreign_sum,
-            organ_sum=organ_sum,
+            foreign_ratio=foreign_ratio,
             ma5_slope=ma5_slope,
             pct_from_52high=pct_52high
         )
@@ -771,7 +830,7 @@ COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
            '총점', '신호',
            '일목(일봉)', 'MA크로스',
            'RSI', 'CCI', 'BB상태', '거래량',
-           '외인/기관(5일)', '5MA기울기', '52주위치',
+           '외국인지분율', '5MA기울기', '52주위치',
            '차트']
 
 
@@ -919,13 +978,13 @@ def compress_display(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def style_investor(val):
-    """외인/기관 순매수 색상"""
+    """외국인 지분율 색상"""
     v = str(val)
-    if '🔴' in v and v.count('🔴') == 2: return 'color:#b71c1c;font-weight:bold'  # 둘 다 순매수
-    if '🔴' in v:                          return 'color:#ef5350'
-    if '🔵' in v and v.count('🔵') == 2: return 'color:#0d47a1;font-weight:bold'  # 둘 다 순매도
-    if '🔵' in v:                          return 'color:#42a5f5'
-    return 'color:#9e9e9e'
+    if '고비중' in v: return 'color:#b71c1c;font-weight:bold'
+    if '중비중' in v: return 'color:#e65100;font-weight:bold'
+    if '저비중' in v: return 'color:#f9a825'
+    if '미미'   in v: return 'color:#9e9e9e'
+    return ''
 
 def style_slope(val):
     v = str(val)
@@ -952,9 +1011,9 @@ def show_styled_dataframe(dataframe):
     dynamic_height = (len(disp) + 1) * 35 + 3
 
     # 존재하는 컬럼만 스타일 적용 (컬럼 없으면 에러 방지)
-    has_investor = '외인/기관(5일)' in disp.columns
-    has_slope    = '5MA기울기'      in disp.columns
-    has_52w      = '52주위치'       in disp.columns
+    has_investor = '외국인지분율' in disp.columns
+    has_slope    = '5MA기울기'    in disp.columns
+    has_52w      = '52주위치'     in disp.columns
 
     styled = (
         disp.style
@@ -977,7 +1036,7 @@ def show_styled_dataframe(dataframe):
              subset=['거래량'])
     )
     if has_investor:
-        styled = styled.map(style_investor, subset=['외인/기관(5일)'])
+        styled = styled.map(style_investor, subset=['외국인지분율'])
     if has_slope:
         styled = styled.map(style_slope,    subset=['5MA기울기'])
     if has_52w:
@@ -998,7 +1057,7 @@ def show_styled_dataframe(dataframe):
         "BB상태":      st.column_config.TextColumn("BB",      width="small"),
         "종목명":      st.column_config.TextColumn("종목명",  width="medium"),
         "현재가":      st.column_config.NumberColumn("현재가",width="small"),
-        "외인/기관(5일)": st.column_config.TextColumn("외인/기관",  width="medium"),
+        "외국인지분율":st.column_config.TextColumn("외국인%", width="medium"),
         "5MA기울기":   st.column_config.TextColumn("5MA방향", width="small"),
         "52주위치":    st.column_config.TextColumn("52주",    width="medium"),
     }
@@ -1065,7 +1124,7 @@ st.sidebar.markdown("""
 - CCI 전환            : ±2
 - 이격률              : ±3
 - 거래량              : ±1
-- **외인/기관 순매수  : ±2** ← NEW
+- **외국인 지분율      : ±1** ← NEW (30%↑ 우량, 5%↓ 주의)
 - **5MA 기울기        : ±1** ← NEW
 - **52주 위치 보정    : ±1** ← NEW
 """)
