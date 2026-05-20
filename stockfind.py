@@ -956,10 +956,6 @@ def style_pct(val):
 
 
 def compress_display(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    표시용 텍스트를 압축해서 컬럼 너비를 줄임.
-    원본 df는 변경하지 않고 복사본 반환.
-    """
     d = df.copy()
 
     # 일목: 이모지+핵심단어만
@@ -972,49 +968,22 @@ def compress_display(df: pd.DataFrame) -> pd.DataFrame:
     }
     d['일목(일봉)'] = d['일목(일봉)'].replace(ichi_map)
 
-    # MA크로스: "5:🔥GC 20:📈^ 60:📈^" -> 이모지+숫자만
+    # MA크로스 압축
     def compress_ma(v):
-        # "5:🔥GC" -> "5🔥" / "20:📈^" -> "20📈" 식으로
         parts = str(v).split(' ')
         out = []
         for p in parts:
             if ':' in p:
                 num, sym = p.split(':', 1)
-                # 첫 이모지/문자만
                 short = sym[:2] if len(sym) >= 2 else sym
                 out.append(f"{num}{short}")
         return ' '.join(out) if out else v
     d['MA크로스'] = d['MA크로스'].apply(compress_ma)
 
-    # RSI: "65.3 🟡주의" -> "65.3🟡"
-  
-    def compress_rsi(v):
-        s = str(v)
-        for emoji, short in [('🟢과매도','🟢'), ('🔵관심','🔵'), ('⚪중립','⚪'), ('🟡주의','🟡'), ('🔴과매수','🔴')]:
-            if emoji in s:
-                num = s.replace(emoji,'').strip()
-                return f"{num}{short}"
-        return s
-    d['RSI'] = d['RSI'].apply(compress_rsi)
-
-    # BB상태: "⚡ 수축(폭발 대기) / 하단터치" -> "⚡수축/하단"
-    def compress_bb(v):
-        s = str(v)
-        squeeze = '⚡' if '수축' in s else ('💥' if '팽창' in s else '➖')
-        pos = ''
-        if '상단터치' in s: pos = '상단'
-        elif '하단터치' in s: pos = '하단'
-        elif '밴드내부' in s: pos = '내부'
-        return f"{squeeze}/{pos}" if pos else squeeze
-    d['BB상태'] = d['BB상태'].apply(compress_bb)
-
-    # 거래량: "2.3배 📈" -> 그대로 (이미 짧음)
-
-    # 신호: 이모지 앞 공백 제거
+    # 신호 앞 공백 제거
     d['신호'] = d['신호'].str.strip()
 
     return d
-
 
 def style_signal(val):
     v = str(val)
