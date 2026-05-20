@@ -850,15 +850,14 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
 
         return [
-            code, name, current_change,
-            int(last['종가']), disparity_fmt,
-            score, signal,
-            ichimoku_status, ma_text,
-            rsi_display, cci_display, bb_display,
-            vol_display, consec_display, amount_display,
-            investor_display, slope_display, week52_display,
-            chart_url
-        ]
+    code, name, current_change,
+    int(last['종가']), disparity_fmt,
+    score, signal,
+    ichimoku_status, ma_text,
+    cci_display, bb_display,
+    vol_display, consec_display, amount_display,
+    investor_display, slope_display,
+    chart_url]
 
     except Exception as e:
         return None
@@ -871,9 +870,9 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
 COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
            '총점', '신호',
            '일목(일봉)', 'MA크로스',
-           'RSI', 'CCI', 'BB상태',
+           'CCI', 'BB상태',
            '거래량', '연속봉', '거래대금',
-           '외국인지분율', '5MA기울기', '52주위치',
+           '외국인지분율', '5MA기울기',
            '차트']
 
 
@@ -961,10 +960,6 @@ def style_pct(val):
 
 
 def compress_display(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    표시용 텍스트를 압축해서 컬럼 너비를 줄임.
-    원본 df는 변경하지 않고 복사본 반환.
-    """
     d = df.copy()
 
     # 일목: 이모지+핵심단어만
@@ -1075,7 +1070,6 @@ def show_styled_dataframe(dataframe):
         disp.style
         .map(style_signal,   subset=safe_subset(['신호']))
         .map(style_ichimoku, subset=safe_subset(['일목(일봉)']))
-        .map(style_rsi,      subset=safe_subset(['RSI']))
         .map(style_cci,      subset=safe_subset(['CCI']))
         .map(style_score,    subset=safe_subset(['총점']))
         .map(style_pct,      subset=safe_subset(['등락률', '이격률']))
@@ -1095,8 +1089,6 @@ def show_styled_dataframe(dataframe):
         .map(style_consec,   subset=safe_subset(['연속봉']))
         .map(style_amount,   subset=safe_subset(['거래대금']))
         .map(style_investor, subset=safe_subset(['외국인지분율']))
-        .map(style_slope,    subset=safe_subset(['5MA기울기']))
-        .map(style_52week,   subset=safe_subset(['52주위치']))
     )
 
     col_cfg = {
@@ -1117,7 +1109,6 @@ def show_styled_dataframe(dataframe):
         "종목명":      st.column_config.TextColumn("종목명",  width="medium"),
         "현재가":      st.column_config.NumberColumn("현재가",width="small"),
         "외국인지분율":st.column_config.TextColumn("외국인%", width="medium"),
-        "5MA기울기":   st.column_config.TextColumn("5MA",     width="small"),
         "52주위치":    st.column_config.TextColumn("52주",    width="medium"),
     }
 
@@ -1167,24 +1158,23 @@ def show_styled_dataframe(dataframe):
     if has_52w:
         styled = styled.map(style_52week,   subset=['52주위치'])
 
-    col_cfg = {
-        "코드":        st.column_config.TextColumn("코드",    width="small"),
-        "총점":        st.column_config.NumberColumn("점수",  width="small"),
-        "등락률":      st.column_config.TextColumn("등락",    width="small"),
-        "이격률":      st.column_config.TextColumn("이격",    width="small"),
-        "거래량":      st.column_config.TextColumn("거래량",  width="small"),
-        "차트":        st.column_config.LinkColumn("차트",    width="small", display_text="📊"),
-        "신호":        st.column_config.TextColumn("신호",    width="medium"),
-        "일목(일봉)":  st.column_config.TextColumn("일목",    width="medium"),
-        "MA크로스":    st.column_config.TextColumn("MA",      width="medium"),
-        "RSI":         st.column_config.TextColumn("RSI",     width="small"),
-        "CCI":         st.column_config.TextColumn("CCI",     width="medium"),
-        "BB상태":      st.column_config.TextColumn("BB",      width="small"),
-        "종목명":      st.column_config.TextColumn("종목명",  width="medium"),
-        "현재가":      st.column_config.NumberColumn("현재가",width="small"),
-        "외국인지분율":st.column_config.TextColumn("외국인%", width="medium"),
-        "5MA기울기":   st.column_config.TextColumn("5MA방향", width="small"),
-        "52주위치":    st.column_config.TextColumn("52주",    width="medium"),
+col_cfg = {
+    "코드":        st.column_config.TextColumn("코드"),
+    "총점":        st.column_config.NumberColumn("점수"),
+    "등락률":      st.column_config.TextColumn("등락"),
+    "이격률":      st.column_config.TextColumn("이격"),
+    "거래량":      st.column_config.TextColumn("거래량"),
+    "연속봉":      st.column_config.TextColumn("연속봉"),
+    "거래대금":    st.column_config.TextColumn("거래대금"),
+    "차트":        st.column_config.LinkColumn("차트", display_text="📊"),
+    "신호":        st.column_config.TextColumn("신호"),
+    "일목(일봉)":  st.column_config.TextColumn("일목"),
+    "MA크로스":    st.column_config.TextColumn("MA"),
+    "CCI":         st.column_config.TextColumn("CCI"),
+    "BB상태":      st.column_config.TextColumn("BB"),
+    "종목명":      st.column_config.TextColumn("종목명"),
+    "현재가":      st.column_config.NumberColumn("현재가"),
+    "외국인지분율":st.column_config.TextColumn("외국인%"),
     }
 
     st.dataframe(
