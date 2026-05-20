@@ -1046,37 +1046,53 @@ def show_styled_dataframe(dataframe):
         st.write("분석된 데이터가 없습니다.")
         return
 
+    # This function was missing from your latest code snippet.
+    # It needs to be defined somewhere before show_styled_dataframe is called.
+    def compress_display(df: pd.DataFrame) -> pd.DataFrame:
+        d = df.copy()
+        if '신호' in d.columns:
+            d['신호'] = d['신호'].str.strip()
+        # You can add other compress logic here if needed
+        return d
+
     disp = compress_display(dataframe)
     dynamic_height = (len(disp) + 1) * 35 + 3
 
     def safe_subset(cols):
         return [c for c in cols if c in disp.columns]
 
-    styled = (
-        disp.style
-        .map(style_signal,   subset=safe_subset(['신호']))
-        .map(style_ichimoku, subset=safe_subset(['일목(일봉)']))
-        .map(style_cci,      subset=safe_subset(['CCI']))
-        .map(style_pct,      subset=safe_subset(['등락률', '이격률']))
-        .map(lambda x: ('color:#b71c1c;font-weight:bold' if '🔥' in str(x) else
-                        'color:#0d47a1;font-weight:bold' if '🧊' in str(x) else
-                        'color:#ef5350' if '📈' in str(x) else
-                        'color:#42a5f5' if '📉' in str(x) else ''),
-             subset=safe_subset(['MA크로스']))
-        .map(lambda x: ('color:#ef9a00;font-weight:bold' if '⚡' in str(x) else
-                        'color:#26a69a;font-weight:bold' if '💥' in str(x) else
-                        'color:#ef5350' if '상단' in str(x) else
-                        'color:#42a5f5' if '하단' in str(x) else ''),
-             subset=safe_subset(['BB상태']))
-        .map(lambda x: ('color:#ef5350' if '📈' in str(x) else
-                        'color:#64b5f6' if '📉' in str(x) else ''),
-             subset=safe_subset(['거래량']))
-        .map(style_consec,   subset=safe_subset(['연속봉']))
-        .map(style_amount,   subset=safe_subset(['거래대금']))
-        .map(style_investor, subset=safe_subset(['외국인지분율']))
-        .map(style_slope,    subset=safe_subset(['5MA기울기']))
-        .map(style_timing,   subset=safe_subset(['타이밍상태']))
-    )
+    # Start styling
+    styled = disp.style
+
+    # Apply styles for which functions are defined
+    styled = styled.map(style_signal,   subset=safe_subset(['신호']))
+    styled = styled.map(style_ichimoku, subset=safe_subset(['일목(일봉)']))
+    styled = styled.map(style_cci,      subset=safe_subset(['CCI']))
+    styled = styled.map(style_pct,      subset=safe_subset(['등락률', '이격률']))
+    styled = styled.map(style_timing,   subset=safe_subset(['타이밍상태']))
+
+    # Apply lambda styles
+    styled = styled.map(lambda x: ('color:#b71c1c;font-weight:bold' if '🔥' in str(x) else
+                                   'color:#0d47a1;font-weight:bold' if '🧊' in str(x) else
+                                   'color:#ef5350' if '📈' in str(x) else
+                                   'color:#42a5f5' if '📉' in str(x) else ''),
+                        subset=safe_subset(['MA크로스']))
+
+    styled = styled.map(lambda x: ('color:#ef9a00;font-weight:bold' if '⚡' in str(x) else
+                                   'color:#26a69a;font-weight:bold' if '💥' in str(x) else
+                                   'color:#ef5350' if '상단' in str(x) else
+                                   'color:#42a5f5' if '하단' in str(x) else ''),
+                        subset=safe_subset(['BB상태']))
+
+    styled = styled.map(lambda x: ('color:#ef5350' if '📈' in str(x) else
+                                   'color:#64b5f6' if '📉' in str(x) else ''),
+                        subset=safe_subset(['거래량']))
+
+    # NOTE: Calls to undefined style functions like style_consec, style_amount, etc., were removed.
+    # If you define them, you can add them back like this:
+    # if '연속봉' in disp.columns:
+    #     styled = styled.map(style_consec, subset=['연속봉'])
+
 
     col_cfg = {
         "코드":       st.column_config.TextColumn("코드"),
@@ -1105,6 +1121,7 @@ def show_styled_dataframe(dataframe):
         column_config=col_cfg,
         hide_index=True
     )
+
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다.")
         return
