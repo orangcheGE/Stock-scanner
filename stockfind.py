@@ -1111,12 +1111,14 @@ col_cfg = {
     "신호":        st.column_config.TextColumn("신호"),
     "일목(일봉)":  st.column_config.TextColumn("일목"),
     "MA크로스":    st.column_config.TextColumn("MA"),
+    "RSI":        st.column_config.TextColumn("RSI"),
     "CCI":         st.column_config.TextColumn("CCI"),
     "BB상태":      st.column_config.TextColumn("BB"),
     "종목명":      st.column_config.TextColumn("종목명"),
     "현재가":      st.column_config.NumberColumn("현재가"),
     "외국인지분율":st.column_config.TextColumn("외국인%"),
     "5MA기울기":   st.column_config.TextColumn("5MA"),
+    "52주위치":    st.column_config.TextColumn("52주"),
 }
 
     st.dataframe(
