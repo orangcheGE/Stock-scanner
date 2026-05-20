@@ -1065,14 +1065,14 @@ def show_styled_dataframe(dataframe):
         st.write("분석된 데이터가 없습니다.")
         return
 
-    # 표시용 텍스트 압축 (기존과 동일)
+    # 표시용 텍스트 압축
     disp = compress_display(dataframe)
 
-    # 컬럼 존재 여부를 안전하게 확인하기 위한 헬퍼 함수 (기존과 동일)
+    # 컬럼 존재 여부를 안전하게 확인하기 위한 헬퍼 함수
     def safe_subset(cols):
         return [c for c in cols if c in disp.columns]
 
-    # 스타일 적용 (기존과 동일)
+    # 데이터프레임 스타일 적용
     styled = (
         disp.style
         .map(style_signal,   subset=safe_subset(['신호']))
@@ -1101,9 +1101,7 @@ def show_styled_dataframe(dataframe):
         .map(style_52week,   subset=safe_subset(['52주위치']))
     )
 
-    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-    # *** 핵심 수정 부분 1: 모든 width 설정 제거 ***
-    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+    # 컬럼별 설정을 정의하되, width는 모두 제거하여 자동 조정되게 함
     col_cfg = {
         "코드":        st.column_config.TextColumn("코드"),
         "총점":        st.column_config.NumberColumn("점수"),
@@ -1125,17 +1123,15 @@ def show_styled_dataframe(dataframe):
         "5MA기울기":   st.column_config.TextColumn("5MA"),
         "52주위치":    st.column_config.TextColumn("52주"),
     }
-    
-    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-    # *** 핵심 수정 부분 2: height=dynamic_height 제거 ***
-    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+
+    # 최종적으로 데이터프레임을 화면에 출력
+    # height 파라미터를 제거하여 테이블이 내용 전체를 표시하도록 함
     st.dataframe(
         styled,
         use_container_width=True,
         column_config=col_cfg,
         hide_index=True
     )
-
 
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다.")
