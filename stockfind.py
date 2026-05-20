@@ -1099,26 +1099,27 @@ def show_styled_dataframe(dataframe):
         .map(style_52week,   subset=safe_subset(['52주위치']))
     )
 
-   col_cfg = {
-    "코드":        st.column_config.TextColumn("코드"),
-    "총점":        st.column_config.NumberColumn("점수"),
-    "등락률":      st.column_config.TextColumn("등락"),
-    "이격률":      st.column_config.TextColumn("이격"),
-    "거래량":      st.column_config.TextColumn("거래량"),
-    "연속봉":      st.column_config.TextColumn("연속봉"),
-    "거래대금":    st.column_config.TextColumn("거래대금"),
-    "차트":        st.column_config.LinkColumn("차트", display_text="📊"),
-    "신호":        st.column_config.TextColumn("신호"),
-    "일목(일봉)":  st.column_config.TextColumn("일목"),
-    "MA크로스":    st.column_config.TextColumn("MA"),
-    "CCI":         st.column_config.TextColumn("CCI"),
-    "BB상태":      st.column_config.TextColumn("BB"),
-    "종목명":      st.column_config.TextColumn("종목명"),
-    "현재가":      st.column_config.NumberColumn("현재가"),
-    "외국인지분율":st.column_config.TextColumn("외국인%"),
-    "5MA기울기":   st.column_config.TextColumn("5MA"),
-    "52주위치":    st.column_config.TextColumn("52주"), # 이 줄을 추가하는 것을 추천합니다.
-}
+    col_cfg = {
+        "코드":        st.column_config.TextColumn("코드",    width="small"),
+        "총점":        st.column_config.NumberColumn("점수",  width="small"),
+        "등락률":      st.column_config.TextColumn("등락",    width="small"),
+        "이격률":      st.column_config.TextColumn("이격",    width="small"),
+        "거래량":      st.column_config.TextColumn("거래량",  width="small"),
+        "연속봉":      st.column_config.TextColumn("연속봉",  width="small"),
+        "거래대금":    st.column_config.TextColumn("거래대금",width="small"),
+        "차트":        st.column_config.LinkColumn("차트",    width="small", display_text="📊"),
+        "신호":        st.column_config.TextColumn("신호",    width="medium"),
+        "일목(일봉)":  st.column_config.TextColumn("일목",    width="medium"),
+        "MA크로스":    st.column_config.TextColumn("MA",      width="medium"),
+        "RSI":         st.column_config.TextColumn("RSI",     width="small"),
+        "CCI":         st.column_config.TextColumn("CCI",     width="medium"),
+        "BB상태":      st.column_config.TextColumn("BB",      width="small"),
+        "종목명":      st.column_config.TextColumn("종목명",  width="medium"),
+        "현재가":      st.column_config.NumberColumn("현재가",width="small"),
+        "외국인지분율":st.column_config.TextColumn("외국인%", width="medium"),
+        "5MA기울기":   st.column_config.TextColumn("5MA",     width="small"),
+        "52주위치":    st.column_config.TextColumn("52주",    width="medium"),
+    }
 
     st.dataframe(
         styled,
