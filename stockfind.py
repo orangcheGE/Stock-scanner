@@ -358,257 +358,253 @@ def get_bb_squeeze_status(bandwidth_series):
         return "➖ 보통", False
 
 
+
 # ---------------------------------------------
-# 점수 기반 신호 결정
+# 매수 타이밍 판단 — 3단계 필터 + 6단계 신호
 # ---------------------------------------------
+#
+# [설계 원칙]
+# 점수 합산 방식을 버리고 "AND 조건 게이트" 방식으로 전환
+#
+# 1단계 자격 [구조 확인] : 구름대 위 + 60MA 위 (추세 방향)
+# 2단계 타이밍 [진입 시점] : 20MA 터치/반등 + MACD 전환 + CCI 전환
+# 3단계 확인 [신뢰도] : 거래량 방향 + 연속봉 + 외국인 지분
+#
+# RSI: 과매수 억제 필터로만 사용 (점수 X)
+# 소형주: 분석은 하되 신호 옆에 경고 표기
+# 신호 발생 경과일: 별도 컬럼으로 표시
 
-def calc_signal_score(last, prev, ichimoku_status,
-                      rsi_val, cci_now, cci_prev,
-                      disparity, bb_width_series,
-                      foreign_ratio=0.0,
-                      ma5_slope=0, pct_from_52high=0,
-                      consec_score=0,
-                      vol_dir_score=0,
-                      price_col='종가'):
-    score = 0
-    detail = {}
 
-    # ==========================================
-    # ① 구름대 (전환 시점 + 진입 방향)
-    # ==========================================
-    if '상향돌파' in ichimoku_status:
-        s = 3
-    elif '하향이탈' in ichimoku_status:
-        s = -3
-    elif '상승진입' in ichimoku_status:   # 아래->구름대 내부
-        s = 1
-    elif '하락진입' in ichimoku_status:   # 위->구름대 내부 (위험)
-        s = -2
-    else:
-        s = 0     # 구름대 위-아래 유지 -> 이미 반영, 점수 없음
-    score += s
-    detail['구름대'] = s
+def calc_days_since(df_final, condition_fn, max_lookback=10):
+    """
+    condition_fn(row) -> bool 을 만족하는 마지막 날로부터 경과일 반환
+    현재도 조건 만족 중이면 0, 아니면 None
+    """
+    try:
+        for days_ago in range(0, max_lookback):
+            row = df_final.iloc[-(days_ago + 1)]
+            if condition_fn(row):
+                if days_ago == 0:
+                    return 0   # 오늘 발생
+                return days_ago
+        return None
+    except Exception:
+        return None
 
-    # ==========================================
-    # ② MACD 히스토그램 (전환 + 기울기)
-    # ==========================================
-    hist_now   = last['MACD_hist']
-    hist_prev  = prev['MACD_hist']
-    macd_slope = hist_now - hist_prev
 
-    if hist_now > 0 and hist_prev <= 0:
-        s = 2    # 음->양 전환 (골든)
-    elif hist_now < 0 and hist_prev >= 0:
-        s = -2   # 양->음 전환 (데드)
-    elif hist_now < 0 and macd_slope > 0:
-        s = 1    # 음수 유지지만 기울기^ (회복 조짐)
-    elif hist_now > 0 and macd_slope < 0:
-        s = -1   # 양수 유지지만 기울기v (약화 조짐)
-    else:
-        s = 0
-    score += s
-    detail['MACD'] = s
+def detect_20ma_touch(df_final):
+    """
+    20MA 터치/반등 감지
+    - 종가가 20MA ±3% 이내에 들어왔다가 반등 중
+    - 또는 전일 20MA 아래였다가 오늘 위로 올라온 경우
+    반환: (터치여부, 터치경과일, 표시문자열)
+    """
+    try:
+        last  = df_final.iloc[-1]
+        prev  = df_final.iloc[-2]
+        price = last["종가"]
+        ma20  = last["20MA"]
+        disparity = ((price - ma20) / ma20 * 100) if ma20 > 0 else 0
 
-    # ==========================================
-    # ③ CCI (전환 시점만)
-    # ==========================================
-    if cci_prev < -100 and cci_now >= -100:
-        s = 2    # 과매도(-100) 탈출 -> 강한 반등 신호
-    elif cci_prev < 0 and cci_now >= 0:
-        s = 1    # 제로 크로스 상향
-    elif cci_prev > 0 and cci_now <= 0:
-        s = -1   # 제로 크로스 하향
-    elif cci_prev > 100 and cci_now <= 100:
-        s = -2   # 과매수(+100) 이탈 -> 강한 하락 신호
-    else:
-        s = 0
-    score += s
-    detail['CCI'] = s
+        # 경우1: 전일 20MA 아래 → 오늘 20MA 위 (골든터치)
+        prev_disp = ((prev["종가"] - prev["20MA"]) / prev["20MA"] * 100) if prev["20MA"] > 0 else 0
+        if prev_disp < 0 and disparity >= 0:
+            return True, 0, "🎯20MA골든터치"
 
-    # ==========================================
-    # ④ 이격률 타이밍 (세분화)
-    # ==========================================
-    if disparity > 20:
-        s = -3
-    elif disparity > 12:
-        s = -2
-    elif disparity > 6:
-        s = -1
-    elif disparity >= -3:
-        s = 0    # 20MA +/-3% -> 눌림목 완성, 중립
-    elif disparity >= -8:
-        s = 1    # 살짝 눌림 -> 진입 타이밍 양호
-    else:
-        s = 2    # 많이 눌림 (추세 확인 필수)
-    score += s
-    detail['이격률'] = s
+        # 경우2: 현재 20MA ±3% 이내 + 상승 중
+        if -3 <= disparity <= 3 and price >= prev["종가"]:
+            return True, 0, f"🎯20MA근접({disparity:+.1f}%)"
 
-    # ==========================================
-    # ⑤ 거래량 (전환 신호 동반 시만)
-    # ==========================================
-    vol_ratio = last.get('vol_ratio', np.nan)
-    has_turn  = (detail['구름대'] != 0 or
-                 abs(detail['MACD']) >= 1 or
-                 abs(detail['CCI']) >= 1)
-    if not pd.isna(vol_ratio):
-        if vol_ratio >= 1.5 and has_turn:
-            s = 1
-        elif vol_ratio < 0.5:
-            s = -1
-        else:
-            s = 0
-    else:
-        s = 0
-    score += s
-    detail['거래량'] = s
+        # 경우3: 최근 5일 내 터치 후 반등 중
+        for d in range(1, 6):
+            r = df_final.iloc[-(d+1)]
+            r_disp = ((r["종가"] - r["20MA"]) / r["20MA"] * 100) if r["20MA"] > 0 else 0
+            if -3 <= r_disp <= 3 and price > r["종가"]:
+                return True, d, f"🎯20MA터치후{d}일"
 
-    # ==========================================
-    # ⑥ 외국인 지분율 — 스마트머니 비중 판단
-    # ==========================================
-    # 지분율 높을수록 외국인이 장기적으로 신뢰하는 종목
-    # 30% 이상 -> 외국인 선호 우량주 (+1 보정)
-    # 단독 점수보다는 다른 신호의 신뢰도 보강 역할
-    if foreign_ratio >= 30:
-        s = 1    # 외국인 고비중 -> 신호 신뢰도 상승
-    elif foreign_ratio >= 15:
-        s = 0    # 중간 비중 -> 중립
-    elif foreign_ratio > 0 and foreign_ratio < 5:
-        s = -1   # 외국인 외면 종목 -> 신호 신뢰도 하락
-    else:
-        s = 0
-    score += s
-    detail['외국인지분'] = s
+        return False, None, f"이격{disparity:+.1f}%"
+    except Exception:
+        return False, None, "-"
 
-    # ==========================================
-    # ⑦ 5MA 기울기 — 단기 모멘텀 확인
-    # ==========================================
-    # 전환 신호가 있을 때 방향이 맞으면 보강, 역방향이면 페널티
-    if ma5_slope > 0.3 and detail['구름대'] >= 0:
-        s = 1    # 상승 모멘텀 확인
-    elif ma5_slope < -0.3 and detail['구름대'] <= 0:
-        s = -1   # 하락 모멘텀 확인
-    else:
-        s = 0
-    score += s
-    detail['5MA기울기'] = s
 
-    # ==========================================
-    # ⑧ 52주 위치 보정
-    # ==========================================
-    # 신고가 근접(3% 이내): 강한 추세 -> 추세상승 강화 / 신규매수는 주의
-    # 신저가 근접: 반등 기대 but 추세 약함 -> 바닥탐색 신호 강화
-    if pct_from_52high >= -3:
-        # 신고가권: 추세상승 확인 신호지만 신규진입 부담 -> 이격률 페널티와 동일 방향
-        s = 0    # 중립 (이격률에서 이미 반영)
-    elif pct_from_52high <= -30:
-        s = 1    # 많이 내려온 상태 -> 바닥탐색 가능성 (단, 추세 확인 필수)
-    else:
-        s = 0
-    score += s
-    detail['52주위치'] = s
+def detect_macd_turn(df_final, lookback=5):
+    """
+    MACD 히스토그램 음→양 전환 감지 + 경과일
+    반환: (전환여부, 경과일, 표시문자열)
+    """
+    try:
+        # 현재 양수이면서, lookback 내에 음→양 전환이 있었는지
+        cur_hist = df_final["MACD_hist"].iloc[-1]
 
-    # ==========================================
-    # 조건 플래그 (신호 결정에 사용)
-    # ==========================================
-    is_above_cloud   = '구름대 위'  in ichimoku_status or '상향돌파' in ichimoku_status
-    is_below_cloud   = '구름대 아래' in ichimoku_status or '하향이탈' in ichimoku_status
-    is_falling_entry = '하락진입'   in ichimoku_status   # 위에서 내려와 구름대 진입
-    is_rising_entry  = '상승진입'   in ichimoku_status   # 아래서 올라와 구름대 진입
-    is_inside_cloud  = '내부'       in ichimoku_status   # 구름대 내부 횡보
+        if cur_hist <= 0:
+            # 음수 유지지만 기울기 상승 = 회복 조짐
+            slope = df_final["MACD_hist"].iloc[-1] - df_final["MACD_hist"].iloc[-3]
+            if slope > 0:
+                return False, None, "📊MACD회복중"
+            return False, None, f"📊MACD음({cur_hist:.0f})"
 
-    cloud_breakout   = detail['구름대'] == 3
-    cloud_breakdown  = detail['구름대'] == -3
-    macd_up          = detail['MACD'] >= 1
-    macd_down        = detail['MACD'] <= -1
-    cci_up           = detail['CCI'] > 0
-    cci_down         = detail['CCI'] < 0
+        # 음→양 전환 경과일 계산
+        for d in range(1, lookback + 1):
+            prev_hist = df_final["MACD_hist"].iloc[-(d+1)]
+            if prev_hist <= 0:
+                return True, d - 1, f"📊MACD전환{d-1}일전" if d > 1 else "📊MACD골든전환"
+        # 양수 유지 중 (전환 후 lookback일 이상 경과)
+        return True, lookback, f"📊MACD양수유지"
+    except Exception:
+        return False, None, "-"
 
-    is_high_disp     = disparity > 15   # 많이 오름 -> 신규 진입 부담
-    is_mid_disp      = 6 < disparity <= 15  # 적당히 오름 -> 홀딩 유효
-    is_low_disp      = disparity < -10  # 많이 하락
 
-    # ==========================================
-    # 12단계 신호 결정
-    # 우선순위: 위험경보 -> 강한매수 -> 매수 -> 홀딩/중립 -> 하락경보 -> 매도
-    # ==========================================
+def detect_cci_turn(df_final, lookback=5):
+    """
+    CCI 음→양 전환 또는 -100 탈출 감지 + 경과일
+    반환: (전환여부, 경과일, 표시문자열)
+    """
+    try:
+        cur_cci = df_final["CCI"].iloc[-1]
 
-    # -- ⚠️ 구름대주의 [최우선 위험경보] ------
-    # 구름대 하락 진입: 매수 신호 전면 억제
-    if is_falling_entry:
+        # 현재 양수이면서 전환 경과일 찾기
+        if cur_cci > 0:
+            for d in range(1, lookback + 1):
+                prev_cci = df_final["CCI"].iloc[-(d+1)]
+                if prev_cci <= 0:
+                    label = "CCI제로돌파" if d == 1 else f"CCI전환{d-1}일"
+                    return True, d - 1, f"📊{label}"
+            return True, lookback, "📊CCI양수유지"
+
+        # -100 탈출 (강한 반등)
+        if cur_cci > -100:
+            prev_cci = df_final["CCI"].iloc[-2]
+            if prev_cci < -100:
+                return True, 0, "📊CCI과매도탈출"
+
+        # 음수지만 상승 중
+        slope = cur_cci - df_final["CCI"].iloc[-3]
+        if slope > 0:
+            return False, None, f"📊CCI회복중({cur_cci:.0f})"
+
+        return False, None, f"📊CCI음({cur_cci:.0f})"
+    except Exception:
+        return False, None, "-"
+
+
+def calc_buy_signal(last, prev, df_final,
+                    ichimoku_status, rsi_val,
+                    amount_ok, foreign_ratio,
+                    vol_dir_score, consec_score,
+                    disparity):
+    """
+    3단계 필터 기반 6단계 신호 결정
+    
+    [6단계 신호]
+    🎯 매수 타이밍   : 1단계+2단계 모두 충족 (핵심 3가지 AND)
+    📈 매수 준비     : 1단계 충족 + 2단계 중 2가지 충족
+    🔔 관찰 등록     : 1단계 충족 + 2단계 중 1가지 충족
+    🛡️ 홀딩          : 1단계 충족 + 신호 없음
+    ⚠️ 구름대주의    : 구름대 하락 진입
+    📉 매도/하락     : 구름대 아래 or 하락 전환
+    """
+    # ── 공통 플래그 ──────────────────────────────
+    above_cloud  = "구름대 위"  in ichimoku_status or "상향돌파" in ichimoku_status
+    below_cloud  = "구름대 아래" in ichimoku_status or "하향이탈" in ichimoku_status
+    fall_entry   = "하락진입"   in ichimoku_status
+    inside_cloud = "내부"       in ichimoku_status
+
+    price    = last["종가"]
+    ma60     = last["60MA"]
+    above_60 = price > ma60 if not pd.isna(ma60) else False
+
+    rsi_ok      = rsi_val < 70          # RSI 과매수 아님 (억제 필터)
+    rsi_hot     = rsi_val >= 70         # RSI 과매수
+    high_disp   = disparity > 15        # 이미 많이 오름
+
+    # 20MA 터치
+    ma20_touch, ma20_days, ma20_disp = detect_20ma_touch(df_final)
+    # MACD 전환
+    macd_turn,  macd_days, macd_disp  = detect_macd_turn(df_final)
+    # CCI 전환
+    cci_turn,   cci_days,  cci_disp   = detect_cci_turn(df_final)
+
+    # 3단계 확인 점수 (보조)
+    confirm = vol_dir_score + consec_score
+    if foreign_ratio >= 30: confirm += 1
+    elif foreign_ratio < 5 and foreign_ratio > 0: confirm -= 1
+
+    # ── 신호 결정 ────────────────────────────────
+
+    # ⚠️ 구름대주의 (최우선)
+    if fall_entry:
         signal = "⚠️ 구름대주의"
+        tag    = "caution"
 
-    # -- 🔥 적극매수 --------------------------
-    # 구름대 돌파 + MACD-CCI 동시 상향 전환 + 총점 높음
-    elif (score >= 7
-          and cloud_breakout
-          and macd_up and cci_up):
-        signal = "🔥 적극매수"
+    # 📉 매도/하락 계열
+    elif below_cloud:
+        hist_now  = last["MACD_hist"]
+        hist_prev = prev["MACD_hist"]
+        cci_now   = last["CCI"]
+        cci_prev  = prev["CCI"]
+        macd_dead = hist_now < 0 and hist_prev >= 0
+        cci_dead  = cci_now < 0 and cci_prev >= 0
+        if macd_dead and cci_dead:
+            signal = "🧊 적극매도"
+        elif "이탈" in ichimoku_status:
+            signal = "📉 매도관심"
+        elif macd_turn or cci_turn:
+            signal = "🔄 바닥탐색"
+        else:
+            signal = "🔽 추세하락"
+        tag = "sell"
 
-    # -- 📈 매수관심 --------------------------
-    # 전환 신호 2개^ + 이격률 부담 없음 + 총점 >= 4
-    elif (score >= 4
-          and not is_high_disp
-          and (cloud_breakout or macd_up or cci_up)
-          and sum([cloud_breakout, macd_up, cci_up]) >= 2):
-        signal = "📈 매수관심"
-
-    # -- 🌱 진입준비 --------------------------
-    # 전환 신호 1개 + 이격률 양호 + 총점 >= 2
-    elif (score >= 2
-          and disparity <= 6
-          and has_turn
-          and not is_falling_entry):
-        signal = "🌱 진입준비"
-
-    # -- 🔄 바닥탐색 --------------------------
-    # 구름대 아래 오래 있었지만 MACD-CCI 회복 조짐 -> 저점 반등 예비 신호
-    elif (is_below_cloud
-          and (macd_up or cci_up)
-          and score >= 0):
-        signal = "🔄 바닥탐색"
-
-    # -- 🔻 하락가속 --------------------------
-    # 구름대 아래 + MACD-CCI 동시 하락 전환 -> 낙폭 확대 위험
-    elif (is_below_cloud
-          and macd_down and cci_down):
-        signal = "🔻 하락가속"
-
-    # -- 🧊 적극매도 --------------------------
-    # 하향이탈 직후 + MACD-CCI 동시v + 총점 매우 낮음
-    elif (score <= -5
-          and cloud_breakdown
-          and macd_down and cci_down):
-        signal = "🧊 적극매도"
-
-    # -- 📉 매도관심 --------------------------
-    elif score <= -3:
-        signal = "📉 매도관심"
-
-    # -- 🔽 추세하락 --------------------------
-    # 구름대 아래 + 많이 하락 -> 탈출 고려
-    elif is_below_cloud and is_low_disp:
-        signal = "🔽 추세하락"
-
-    # -- 🔼 추세상승 --------------------------
-    # 구름대 위 + 많이 오름 -> 홀딩 OK, 신규 진입 주의
-    elif is_above_cloud and is_high_disp:
-        signal = "🔼 추세상승"
-
-    # -- 🛡️ 홀딩유지 --------------------------
-    # 구름대 위 + 이격률 적당 + 전환신호 없음 -> 보유 중 안정권
-    elif is_above_cloud and is_mid_disp and not has_turn:
-        signal = "🛡️ 홀딩유지"
-
-    # -- 🌫️ 구름대내부 -------------------------
-    # 구름대 안에서 방향 불명확 횡보
-    elif is_inside_cloud:
+    # 구름대 내부
+    elif inside_cloud:
         signal = "🌫️ 구름대내부"
+        tag    = "neutral"
 
-    # -- ⏸️ 관망 ------------------------------
+    # 구름대 위 ─────────────────────────────────
+    # 1단계: 구름대 위 + 60MA 위
+    elif above_cloud:
+        stage1 = above_60
+
+        if not stage1:
+            # 60MA 아래 = 장기 추세 미확인
+            signal = "🛡️ 홀딩"
+            tag    = "hold"
+        elif rsi_hot or high_disp:
+            # RSI 과매수 or 이미 많이 오름 → 타이밍 억제
+            signal = "🔼 추세상승(과열)"
+            tag    = "hold"
+        else:
+            # 2단계: 핵심 3가지 확인
+            turn_count = sum([ma20_touch, macd_turn, cci_turn])
+
+            if turn_count >= 3:
+                # 3가지 모두 충족 = 최적 매수 타이밍
+                signal = "🎯 매수타이밍"
+                tag    = "buy_strong"
+            elif turn_count == 2:
+                signal = "📈 매수준비"
+                tag    = "buy"
+            elif turn_count == 1:
+                signal = "🔔 관찰등록"
+                tag    = "watch"
+            else:
+                signal = "🛡️ 홀딩"
+                tag    = "hold"
+
+        # RSI/이격률 경고 부기
+        if rsi_hot:
+            signal += "(RSI과열)"
+        elif high_disp and "타이밍" in signal:
+            signal = signal.replace("🎯 매수타이밍", "🎯 매수타이밍(고이격)")
     else:
         signal = "⏸️ 관망"
+        tag    = "neutral"
 
-    return score, signal, detail
+    # 소형주 경고 (분석은 포함, 신호 옆에 표기)
+    if not amount_ok and tag in ("buy_strong", "buy", "watch"):
+        signal = f"⚠️소형 {signal}"
+
+    return signal, tag, ma20_disp, macd_disp, cci_disp
+
 
 
 # ---------------------------------------------
@@ -831,32 +827,30 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
         else:
             foreign_ratio, investor_display = 0.0, "-"
 
-        # -- 점수 기반 종합 신호 --------------
-        score, signal, detail = calc_signal_score(
-            last, prev, ichimoku_status,
-            rsi_val, cci_now, cci_prev,
-            disparity, df_final['BB_width'],
-            foreign_ratio=foreign_ratio,
-            ma5_slope=ma5_slope,
-            pct_from_52high=pct_52high,
-            consec_score=consec_score,
-            vol_dir_score=vol_dir_score,
+        # ── 점수 기반 종합 신호 ──────────────
+        signal, tag, ma20_disp, macd_disp, cci_disp_timing = calc_buy_signal(
+            last, prev, df_final,
+            ichimoku_status, rsi_val,
+            amount_ok, foreign_ratio,
+            vol_dir_score, consec_score,
+            disparity
         )
 
-        # ① 거래대금 미달 종목 -> 신호 강등
-        if not amount_ok and signal in ("🔥 적극매수", "📈 매수관심"):
-            signal = f"⚠️소형({signal})"
+        # ── 신호 발생 경과일 표시 ────────────
+        # 20MA터치·MACD·CCI 각 경과일을 합쳐 "타이밍 상태" 컬럼으로 표시
+        timing_display = f"{ma20_disp} | {macd_disp} | {cci_disp_timing}"
 
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
 
         return [
             code, name, current_change,
             int(last['종가']), disparity_fmt,
-            score, signal,
+            signal,
             ichimoku_status, ma_text,
-            rsi_display, cci_display, bb_display,
+            cci_display, bb_display,
             vol_display, consec_display, amount_display,
-            investor_display, slope_display, week52_display,
+            investor_display, slope_display,
+            timing_display,
             chart_url
         ]
 
@@ -869,11 +863,12 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
 # ---------------------------------------------
 
 COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
-           '총점', '신호',
+           '신호',
            '일목(일봉)', 'MA크로스',
-           'RSI', 'CCI', 'BB상태',
+           'CCI', 'BB상태',
            '거래량', '연속봉', '거래대금',
-           '외국인지분율', '5MA기울기', '52주위치',
+           '외국인지분율', '5MA기울기',
+           '타이밍상태',
            '차트']
 
 
@@ -1020,47 +1015,32 @@ def compress_display(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-def style_consec(val):
+def style_signal(val):
     v = str(val)
-    if '연속양봉' in v: return 'color:#b71c1c;font-weight:bold'
-    if '양봉'     in v: return 'color:#ef5350'
-    if '연속음봉' in v: return 'color:#1565c0;font-weight:bold'
-    if '음봉'     in v: return 'color:#42a5f5'
-    return ''
-
-def style_amount(val):
-    v = str(val)
-    if '⚠️' in v:   return 'color:#9e9e9e'
-    if '대형' in v: return 'color:#b71c1c;font-weight:bold'
-    if '중형' in v: return 'color:#e65100;font-weight:bold'
-    if '소형' in v: return 'color:#f9a825'
-    return ''
-
-def style_investor(val):
-    v = str(val)
-    if '고비중' in v: return 'color:#b71c1c;font-weight:bold'
-    if '중비중' in v: return 'color:#e65100;font-weight:bold'
-    if '저비중' in v: return 'color:#f9a825'
-    if '미미'   in v: return 'color:#9e9e9e'
-    return ''
-
-def style_slope(val):
-    v = str(val)
-    if '급등' in v: return 'color:#b71c1c;font-weight:bold'
-    if '상승' in v: return 'color:#ef5350'
-    if '급락' in v: return 'color:#0d47a1;font-weight:bold'
-    if '하락' in v: return 'color:#42a5f5'
+    if '매수타이밍' in v: return 'color:white;background-color:#b71c1c;font-weight:bold'
+    if '매수준비'   in v: return 'color:#ef5350;font-weight:bold'
+    if '관찰등록'   in v: return 'color:#ff8f00;font-weight:bold'
+    if '바닥탐색'   in v: return 'color:#8d6e63;font-weight:bold'
+    if '홀딩'       in v: return 'color:#2e7d32;font-weight:bold'
+    if '추세상승'   in v: return 'color:#558b2f'
+    if '구름대내부' in v: return 'color:#78909c'
+    if '구름대주의' in v: return 'color:white;background-color:#e65100;font-weight:bold'
+    if '적극매도'   in v: return 'color:white;background-color:#0d47a1;font-weight:bold'
+    if '매도관심'   in v: return 'color:#42a5f5;font-weight:bold'
+    if '추세하락'   in v: return 'color:#1565c0;font-weight:bold'
+    if '바닥탐색'   in v: return 'color:#8d6e63'
     return 'color:#9e9e9e'
 
-def style_52week(val):
+def style_timing(val):
+    """타이밍상태 컬럼 색상"""
     v = str(val)
-    if '신고가'   in v: return 'color:#b71c1c;font-weight:bold'
-    if '고점근접' in v: return 'color:#ef5350'
-    if '저점근접' in v: return 'color:#1565c0;font-weight:bold'
-    return ''
-# ---------------------------------------------
-# 스타일 데이터프레임 표시 (최종 수정본)
-# ---------------------------------------------
+    if '골든터치'  in v or '골든전환' in v: return 'color:#b71c1c;font-weight:bold'
+    if '20MA근접'  in v or '터치후'   in v: return 'color:#ef5350'
+    if 'MACD전환'  in v or 'CCI돌파'  in v: return 'color:#ff8f00'
+    if '회복중'    in v:                    return 'color:#f9a825'
+    return 'color:#9e9e9e'
+
+
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다.")
@@ -1069,76 +1049,129 @@ def show_styled_dataframe(dataframe):
     disp = compress_display(dataframe)
     dynamic_height = (len(disp) + 1) * 35 + 3
 
-    # 현재 데이터프레임에 존재하는 컬럼만 스타일을 적용하기 위한 헬퍼 함수
     def safe_subset(cols):
         return [c for c in cols if c in disp.columns]
 
-    # 스타일 체인 시작
-    styled = disp.style
-    
-    # 각 스타일에 대해 존재하는 컬럼에만 순차적으로 적용
-    styled = styled.map(style_signal,   subset=safe_subset(['신호']))
-    styled = styled.map(style_ichimoku, subset=safe_subset(['일목(일봉)']))
-    styled = styled.map(style_rsi,      subset=safe_subset(['RSI'])) # RSI 스타일 추가
-    styled = styled.map(style_cci,      subset=safe_subset(['CCI']))
-    styled = styled.map(style_score,    subset=safe_subset(['총점']))
-    styled = styled.map(style_pct,      subset=safe_subset(['등락률', '이격률']))
-    styled = styled.map(lambda x: ('color:#b71c1c;font-weight:bold' if '🔥' in str(x) else
-                                    'color:#0d47a1;font-weight:bold' if '🧊' in str(x) else
-                                    'color:#ef5350' if '📈' in str(x) else
-                                    'color:#42a5f5' if '📉' in str(x) else ''),
-                        subset=safe_subset(['MA크로스']))
-    styled = styled.map(lambda x: ('color:#ef9a00;font-weight:bold' if '⚡' in str(x) else
-                                    'color:#26a69a;font-weight:bold' if '💥' in str(x) else
-                                    'color:#ef5350' if '상단' in str(x) else
-                                    'color:#42a5f5' if '하단' in str(x) else ''),
-                        subset=safe_subset(['BB상태']))
-    styled = styled.map(lambda x: ('color:#ef5350' if '📈' in str(x) else
-                                    'color:#64b5f6' if '📉' in str(x) else ''),
-                        subset=safe_subset(['거래량']))
-    styled = styled.map(style_consec,   subset=safe_subset(['연속봉']))
-    styled = styled.map(style_amount,   subset=safe_subset(['거래대금']))
-    styled = styled.map(style_investor, subset=safe_subset(['외국인지분율']))
-    styled = styled.map(style_slope,    subset=safe_subset(['5MA기울기']))
-    styled = styled.map(style_52week,   subset=safe_subset(['52주위치']))
+    styled = (
+        disp.style
+        .map(style_signal,   subset=safe_subset(['신호']))
+        .map(style_ichimoku, subset=safe_subset(['일목(일봉)']))
+        .map(style_cci,      subset=safe_subset(['CCI']))
+        .map(style_pct,      subset=safe_subset(['등락률', '이격률']))
+        .map(lambda x: ('color:#b71c1c;font-weight:bold' if '🔥' in str(x) else
+                        'color:#0d47a1;font-weight:bold' if '🧊' in str(x) else
+                        'color:#ef5350' if '📈' in str(x) else
+                        'color:#42a5f5' if '📉' in str(x) else ''),
+             subset=safe_subset(['MA크로스']))
+        .map(lambda x: ('color:#ef9a00;font-weight:bold' if '⚡' in str(x) else
+                        'color:#26a69a;font-weight:bold' if '💥' in str(x) else
+                        'color:#ef5350' if '상단' in str(x) else
+                        'color:#42a5f5' if '하단' in str(x) else ''),
+             subset=safe_subset(['BB상태']))
+        .map(lambda x: ('color:#ef5350' if '📈' in str(x) else
+                        'color:#64b5f6' if '📉' in str(x) else ''),
+             subset=safe_subset(['거래량']))
+        .map(style_consec,   subset=safe_subset(['연속봉']))
+        .map(style_amount,   subset=safe_subset(['거래대금']))
+        .map(style_investor, subset=safe_subset(['외국인지분율']))
+        .map(style_slope,    subset=safe_subset(['5MA기울기']))
+        .map(style_timing,   subset=safe_subset(['타이밍상태']))
+    )
 
-
-    # 사용자께서 제공해주신 col_cfg 정의
     col_cfg = {
-        "코드":        st.column_config.TextColumn("코드"),
-        "총점":        st.column_config.NumberColumn("점수"),
-        "등락률":      st.column_config.TextColumn("등락"),
-        "이격률":      st.column_config.TextColumn("이격"),
-        "거래량":      st.column_config.TextColumn("거래량"),
-        "연속봉":      st.column_config.TextColumn("연속봉"),
-        "거래대금":    st.column_config.TextColumn("거래대금"),
-        "차트":        st.column_config.LinkColumn("차트", display_text="📊"),
-        "신호":        st.column_config.TextColumn("신호"),
-        "일목(일봉)":  st.column_config.TextColumn("일목"),
-        "MA크로스":    st.column_config.TextColumn("MA"),
-        "RSI":         st.column_config.TextColumn("RSI"),
-        "CCI":         st.column_config.TextColumn("CCI"),
-        "BB상태":      st.column_config.TextColumn("BB"),
-        "종목명":      st.column_config.TextColumn("종목명"),
-        "현재가":      st.column_config.NumberColumn("현재가"),
+        "코드":       st.column_config.TextColumn("코드"),
+        "등락률":     st.column_config.TextColumn("등락"),
+        "이격률":     st.column_config.TextColumn("이격"),
+        "거래량":     st.column_config.TextColumn("거래량"),
+        "연속봉":     st.column_config.TextColumn("연속봉"),
+        "거래대금":   st.column_config.TextColumn("거래대금"),
+        "차트":       st.column_config.LinkColumn("차트", display_text="📊"),
+        "신호":       st.column_config.TextColumn("신호"),
+        "일목(일봉)": st.column_config.TextColumn("일목"),
+        "MA크로스":   st.column_config.TextColumn("MA"),
+        "CCI":        st.column_config.TextColumn("CCI"),
+        "BB상태":     st.column_config.TextColumn("BB"),
+        "종목명":     st.column_config.TextColumn("종목명"),
+        "현재가":     st.column_config.NumberColumn("현재가"),
         "외국인지분율":st.column_config.TextColumn("외국인%"),
-        "5MA기울기":   st.column_config.TextColumn("5MA"),
-        "52주위치":    st.column_config.TextColumn("52주"),
+        "5MA기울기":  st.column_config.TextColumn("5MA"),
+        "타이밍상태": st.column_config.TextColumn("20MA|MACD|CCI"),
     }
-    
-    # 현재 표시할 데이터프레임(disp)에 있는 컬럼들만 config에 남김
-    final_col_cfg = {k: v for k, v in col_cfg.items() if k in disp.columns}
 
-    # 최종적으로 데이터프레임을 화면에 표시
     st.dataframe(
         styled,
         use_container_width=True,
         height=dynamic_height,
-        column_config=final_col_cfg,
+        column_config=col_cfg,
         hide_index=True
     )
+    if dataframe.empty:
+        st.write("분석된 데이터가 없습니다.")
+        return
 
+    disp = compress_display(dataframe)
+    dynamic_height = (len(disp) + 1) * 35 + 3
 
+    def safe_subset(cols):
+        return [c for c in cols if c in disp.columns]
+
+    styled = (
+        disp.style
+        .map(style_signal,   subset=safe_subset(['신호']))
+        .map(style_ichimoku, subset=safe_subset(['일목(일봉)']))
+        .map(style_rsi,      subset=safe_subset(['RSI']))
+        .map(style_cci,      subset=safe_subset(['CCI']))
+        .map(style_score,    subset=safe_subset(['총점']))
+        .map(style_pct,      subset=safe_subset(['등락률', '이격률']))
+        .map(lambda x: ('color:#b71c1c;font-weight:bold' if '🔥' in str(x) else
+                        'color:#0d47a1;font-weight:bold' if '🧊' in str(x) else
+                        'color:#ef5350' if '📈' in str(x) else
+                        'color:#42a5f5' if '📉' in str(x) else ''),
+             subset=safe_subset(['MA크로스']))
+        .map(lambda x: ('color:#ef9a00;font-weight:bold' if '⚡' in str(x) else
+                        'color:#26a69a;font-weight:bold' if '💥' in str(x) else
+                        'color:#ef5350' if '상단' in str(x) else
+                        'color:#42a5f5' if '하단' in str(x) else ''),
+             subset=safe_subset(['BB상태']))
+        .map(lambda x: ('color:#ef5350' if '📈' in str(x) else
+                        'color:#64b5f6' if '📉' in str(x) else ''),
+             subset=safe_subset(['거래량']))
+        .map(style_consec,   subset=safe_subset(['연속봉']))
+        .map(style_amount,   subset=safe_subset(['거래대금']))
+        .map(style_investor, subset=safe_subset(['외국인지분율']))
+        .map(style_slope,    subset=safe_subset(['5MA기울기']))
+        .map(style_52week,   subset=safe_subset(['52주위치']))
+    )
+
+    col_cfg = {
+        "코드":        st.column_config.TextColumn("코드",    width="small"),
+        "총점":        st.column_config.NumberColumn("점수",  width="small"),
+        "등락률":      st.column_config.TextColumn("등락",    width="small"),
+        "이격률":      st.column_config.TextColumn("이격",    width="small"),
+        "거래량":      st.column_config.TextColumn("거래량",  width="small"),
+        "연속봉":      st.column_config.TextColumn("연속봉",  width="small"),
+        "거래대금":    st.column_config.TextColumn("거래대금",width="small"),
+        "차트":        st.column_config.LinkColumn("차트",    width="small", display_text="📊"),
+        "신호":        st.column_config.TextColumn("신호",    width="medium"),
+        "일목(일봉)":  st.column_config.TextColumn("일목",    width="medium"),
+        "MA크로스":    st.column_config.TextColumn("MA",      width="medium"),
+        "RSI":         st.column_config.TextColumn("RSI",     width="small"),
+        "CCI":         st.column_config.TextColumn("CCI",     width="medium"),
+        "BB상태":      st.column_config.TextColumn("BB",      width="small"),
+        "종목명":      st.column_config.TextColumn("종목명",  width="medium"),
+        "현재가":      st.column_config.NumberColumn("현재가",width="small"),
+        "외국인지분율":st.column_config.TextColumn("외국인%", width="medium"),
+        "5MA기울기":   st.column_config.TextColumn("5MA",     width="small"),
+        "52주위치":    st.column_config.TextColumn("52주",    width="medium"),
+    }
+
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        height=dynamic_height,
+        column_config=col_cfg,
+        hide_index=True
+    )
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다.")
         return
@@ -1211,7 +1244,168 @@ def show_styled_dataframe(dataframe):
 # UI
 # ---------------------------------------------
 
-st.title("🛡️ 스마트 데이터 스캐너 v4")
+st.title("🛡️ 스마트 데이터 스캐너 v5")
+
+st.sidebar.header("설정")
+market         = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
+selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
+
+st.sidebar.markdown("---")
+use_investor = st.sidebar.checkbox(
+    "📡 외국인 지분율 수집",
+    value=True,
+    help="분석 시작 전 전체 수집 (약 20~30초 추가)"
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("""
+**🎯 6단계 신호 기준**
+
+| 신호 | 조건 |
+|------|------|
+| 🎯 매수타이밍 | 구름대위+60MA위+20MA터치+MACD전환+CCI전환 |
+| 📈 매수준비 | 위 3가지 중 2가지 충족 |
+| 🔔 관찰등록 | 위 3가지 중 1가지 충족 |
+| 🛡️ 홀딩 | 구름대 위, 신호 없음 |
+| ⚠️ 구름대주의 | 위에서 하락 진입 중 |
+| 📉 매도/하락 | 구름대 아래 |
+
+**핵심 3가지 (AND 조건)**
+- 🎯 20MA 터치/반등
+- 📊 MACD 음→양 전환
+- 📊 CCI 음→양 전환
+
+**보조 필터**
+- RSI 70 이상 → 과열 경고 부기
+- 이격률 15% 초과 → 추세상승(과열)
+- 거래대금 30억 미만 → ⚠️소형 표기
+""")
+
+start_btn = st.sidebar.button("🚀 분석 시작")
+
+st.subheader("📊 진단 및 필터링")
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+total_metric   = c1.empty()
+timing_metric  = c2.empty()
+ready_metric   = c3.empty()
+watch_metric   = c4.empty()
+caution_metric = c5.empty()
+sell_metric    = c6.empty()
+
+total_metric.metric("전체",     "0개")
+timing_metric.metric("🎯매수타이밍", "0개")
+ready_metric.metric("📈매수준비",   "0개")
+watch_metric.metric("🔔관찰등록",   "0개")
+caution_metric.metric("⚠️구름주의", "0개")
+sell_metric.metric("📉매도/하락",   "0개")
+
+fb1,fb2,fb3,fb4,fb5,fb6,fb7 = st.columns(7)
+if 'filter' not in st.session_state:
+    st.session_state.filter = "전체"
+
+if fb1.button("🔄전체",      use_container_width=True): st.session_state.filter = "전체"
+if fb2.button("🎯매수타이밍",use_container_width=True): st.session_state.filter = "타이밍"
+if fb3.button("📈매수준비",  use_container_width=True): st.session_state.filter = "준비"
+if fb4.button("🔔관찰등록",  use_container_width=True): st.session_state.filter = "관찰"
+if fb5.button("🛡️홀딩",      use_container_width=True): st.session_state.filter = "홀딩"
+if fb6.button("⚠️구름주의",  use_container_width=True): st.session_state.filter = "구름대주의"
+if fb7.button("📉매도하락",  use_container_width=True): st.session_state.filter = "매도"
+
+st.markdown("---")
+result_title    = st.empty()
+main_result_area = st.empty()
+
+
+def update_metrics(df):
+    total_metric.metric("전체",         f"{len(df)}개")
+    timing_metric.metric("🎯매수타이밍", f"{len(df[df['신호'].str.contains('매수타이밍', regex=False)])}개")
+    ready_metric.metric("📈매수준비",   f"{len(df[df['신호'].str.contains('매수준비',   regex=False)])}개")
+    watch_metric.metric("🔔관찰등록",   f"{len(df[df['신호'].str.contains('관찰등록',   regex=False)])}개")
+    caution_metric.metric("⚠️구름주의", f"{len(df[df['신호'].str.contains('구름대주의', regex=False)])}개")
+    sell_metric.metric("📉매도/하락",   f"{len(df[df['신호'].str.contains('매도|하락|매도관심|적극매도', regex=True)])}개")
+
+
+def apply_filter(df, f):
+    if f == "타이밍": return df[df['신호'].str.contains("매수타이밍", regex=False)]
+    elif f == "준비":  return df[df['신호'].str.contains("매수준비",   regex=False)]
+    elif f == "관찰":  return df[df['신호'].str.contains("관찰등록",   regex=False)]
+    elif f == "홀딩":  return df[df['신호'].str.contains("홀딩",       regex=False)]
+    elif f == "구름대주의": return df[df['신호'].str.contains("구름대주의", regex=False)]
+    elif f == "매도":  return df[df['신호'].str.contains("매도|하락",  regex=True)]
+    return df
+
+
+if start_btn:
+    st.session_state.filter = "전체"
+    market_df = get_market_sum_pages(selected_pages, market)
+
+    if not market_df.empty:
+        results = []
+        st.session_state['df_all'] = pd.DataFrame()
+
+        foreign_dict = {}
+        if use_investor:
+            with st.spinner(f"📡 {market} 외국인 지분율 수집 중..."):
+                foreign_dict = load_foreign_ratio_all(market=market, max_pages=40)
+            st.info(f"✅ {len(foreign_dict):,}개 종목 외국인 지분율 수집 완료")
+
+        progress_bar = st.progress(0, text="분석 시작...")
+
+        for i, (_, row) in enumerate(market_df.iterrows()):
+            res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'],
+                                foreign_dict=foreign_dict,
+                                fetch_investor=use_investor)
+            if res:
+                results.append(res)
+                df_all = pd.DataFrame(results, columns=COLUMNS)
+                # 신호 우선순위 정렬
+                sig_order = {
+                    "🎯 매수타이밍": 0, "📈 매수준비": 1, "🔔 관찰등록": 2,
+                    "🛡️ 홀딩": 3, "⏸️ 관망": 4, "🌫️ 구름대내부": 5,
+                    "⚠️ 구름대주의": 6, "🔄 바닥탐색": 7,
+                    "🔽 추세하락": 8, "📉 매도관심": 9, "🧊 적극매도": 10,
+                }
+                df_all['_ord'] = df_all['신호'].apply(
+                    lambda s: next((v for k, v in sig_order.items() if k in s), 5)
+                )
+                df_all = df_all.sort_values('_ord').drop(columns='_ord').reset_index(drop=True)
+                st.session_state['df_all'] = df_all
+
+                update_metrics(df_all)
+                display_df = apply_filter(df_all, st.session_state.filter)
+                result_title.subheader(f"🔍 결과 ({st.session_state.filter} / {len(display_df)}개)")
+                with main_result_area:
+                    show_styled_dataframe(display_df)
+
+            progress_bar.progress((i + 1) / len(market_df),
+                                  text=f"분석 중: {row['종목명']} ({i+1}/{len(market_df)})")
+
+        progress_bar.empty()
+        st.success("✅ 분석 완료!")
+
+
+if not start_btn and 'df_all' in st.session_state:
+    df = st.session_state['df_all']
+    display_df = apply_filter(df, st.session_state.filter)
+    update_metrics(df)
+    result_title.subheader(f"🔍 결과 ({st.session_state.filter} / {len(display_df)}개)")
+    with main_result_area:
+        show_styled_dataframe(display_df)
+
+    if not display_df.empty:
+        email_summary = display_df[['종목명', '현재가', '신호', '일목(일봉)', '타이밍상태']].to_string(index=False)
+        encoded_body  = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
+        mailto_url    = f"mailto:?subject=주식리포트&body={encoded_body}"
+        st.markdown(
+            f'<a href="{mailto_url}" target="_self" style="text-decoration:none;">'
+            f'<div style="background-color:#0078d4;color:white;padding:15px;border-radius:8px;'
+            f'text-align:center;font-weight:bold;">📧 현재 리스트 Outlook 전송</div></a>',
+            unsafe_allow_html=True
+        )
+
+elif 'df_all' not in st.session_state:
+    with main_result_area:
+        st.info("왼쪽 사이드바에서 '분석 시작' 버튼을 눌러주세요.")
 
 # -- 사이드바 ---------------------------------
 st.sidebar.header("설정")
