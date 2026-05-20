@@ -871,9 +871,9 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
 COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
            '총점', '신호',
            '일목(일봉)', 'MA크로스',
-           'RSI', 'CCI', 'BB상태',
+           'CCI',
            '거래량', '연속봉', '거래대금',
-           '외국인지분율', '5MA기울기', '52주위치',
+           '외국인지분율',
            '차트']
 
 
