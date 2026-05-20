@@ -987,15 +987,15 @@ def compress_display(df: pd.DataFrame) -> pd.DataFrame:
     d['MA크로스'] = d['MA크로스'].apply(compress_ma)
 
     # RSI: "65.3 🟡주의" -> "65.3🟡"
- # 이 블록 전체 삭제 (약 997번째 줄 근처)
-def compress_rsi(v):
-    s = str(v)
-    for emoji, short in [('🟢과매도','🟢'), ('🔵관심','🔵'), ('⚪중립','⚪'), ('🟡주의','🟡'), ('🔴과매수','🔴')]:
-        if emoji in s:
-            num = s.replace(emoji,'').strip()
-            return f"{num}{short}"
-    return s
-d['RSI'] = d['RSI'].apply(compress_rsi)
+  
+    def compress_rsi(v):
+        s = str(v)
+        for emoji, short in [('🟢과매도','🟢'), ('🔵관심','🔵'), ('⚪중립','⚪'), ('🟡주의','🟡'), ('🔴과매수','🔴')]:
+            if emoji in s:
+                num = s.replace(emoji,'').strip()
+                return f"{num}{short}"
+        return s
+    d['RSI'] = d['RSI'].apply(compress_rsi)
 
     # BB상태: "⚡ 수축(폭발 대기) / 하단터치" -> "⚡수축/하단"
     def compress_bb(v):
