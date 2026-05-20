@@ -1058,8 +1058,9 @@ def style_52week(val):
     if '고점근접' in v: return 'color:#ef5350'
     if '저점근접' in v: return 'color:#1565c0;font-weight:bold'
     return ''
-
-
+# ---------------------------------------------
+# 스타일 데이터프레임 표시 (최종 수정본)
+# ---------------------------------------------
 def show_styled_dataframe(dataframe):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다.")
@@ -1068,66 +1069,76 @@ def show_styled_dataframe(dataframe):
     disp = compress_display(dataframe)
     dynamic_height = (len(disp) + 1) * 35 + 3
 
+    # 현재 데이터프레임에 존재하는 컬럼만 스타일을 적용하기 위한 헬퍼 함수
     def safe_subset(cols):
         return [c for c in cols if c in disp.columns]
 
-    styled = (
-        disp.style
-        .map(style_signal,   subset=safe_subset(['신호']))
-        .map(style_ichimoku, subset=safe_subset(['일목(일봉)']))
-        .map(style_rsi,      subset=safe_subset(['RSI']))
-        .map(style_cci,      subset=safe_subset(['CCI']))
-        .map(style_score,    subset=safe_subset(['총점']))
-        .map(style_pct,      subset=safe_subset(['등락률', '이격률']))
-        .map(lambda x: ('color:#b71c1c;font-weight:bold' if '🔥' in str(x) else
-                        'color:#0d47a1;font-weight:bold' if '🧊' in str(x) else
-                        'color:#ef5350' if '📈' in str(x) else
-                        'color:#42a5f5' if '📉' in str(x) else ''),
-             subset=safe_subset(['MA크로스']))
-        .map(lambda x: ('color:#ef9a00;font-weight:bold' if '⚡' in str(x) else
-                        'color:#26a69a;font-weight:bold' if '💥' in str(x) else
-                        'color:#ef5350' if '상단' in str(x) else
-                        'color:#42a5f5' if '하단' in str(x) else ''),
-             subset=safe_subset(['BB상태']))
-        .map(lambda x: ('color:#ef5350' if '📈' in str(x) else
-                        'color:#64b5f6' if '📉' in str(x) else ''),
-             subset=safe_subset(['거래량']))
-        .map(style_consec,   subset=safe_subset(['연속봉']))
-        .map(style_amount,   subset=safe_subset(['거래대금']))
-        .map(style_investor, subset=safe_subset(['외국인지분율']))
-        .map(style_slope,    subset=safe_subset(['5MA기울기']))
-        .map(style_52week,   subset=safe_subset(['52주위치']))
-    )
+    # 스타일 체인 시작
+    styled = disp.style
+    
+    # 각 스타일에 대해 존재하는 컬럼에만 순차적으로 적용
+    styled = styled.map(style_signal,   subset=safe_subset(['신호']))
+    styled = styled.map(style_ichimoku, subset=safe_subset(['일목(일봉)']))
+    styled = styled.map(style_rsi,      subset=safe_subset(['RSI'])) # RSI 스타일 추가
+    styled = styled.map(style_cci,      subset=safe_subset(['CCI']))
+    styled = styled.map(style_score,    subset=safe_subset(['총점']))
+    styled = styled.map(style_pct,      subset=safe_subset(['등락률', '이격률']))
+    styled = styled.map(lambda x: ('color:#b71c1c;font-weight:bold' if '🔥' in str(x) else
+                                    'color:#0d47a1;font-weight:bold' if '🧊' in str(x) else
+                                    'color:#ef5350' if '📈' in str(x) else
+                                    'color:#42a5f5' if '📉' in str(x) else ''),
+                        subset=safe_subset(['MA크로스']))
+    styled = styled.map(lambda x: ('color:#ef9a00;font-weight:bold' if '⚡' in str(x) else
+                                    'color:#26a69a;font-weight:bold' if '💥' in str(x) else
+                                    'color:#ef5350' if '상단' in str(x) else
+                                    'color:#42a5f5' if '하단' in str(x) else ''),
+                        subset=safe_subset(['BB상태']))
+    styled = styled.map(lambda x: ('color:#ef5350' if '📈' in str(x) else
+                                    'color:#64b5f6' if '📉' in str(x) else ''),
+                        subset=safe_subset(['거래량']))
+    styled = styled.map(style_consec,   subset=safe_subset(['연속봉']))
+    styled = styled.map(style_amount,   subset=safe_subset(['거래대금']))
+    styled = styled.map(style_investor, subset=safe_subset(['외국인지분율']))
+    styled = styled.map(style_slope,    subset=safe_subset(['5MA기울기']))
+    styled = styled.map(style_52week,   subset=safe_subset(['52주위치']))
 
-col_cfg = {
-    "코드":        st.column_config.TextColumn("코드"),
-    "총점":        st.column_config.NumberColumn("점수"),
-    "등락률":      st.column_config.TextColumn("등락"),
-    "이격률":      st.column_config.TextColumn("이격"),
-    "거래량":      st.column_config.TextColumn("거래량"),
-    "연속봉":      st.column_config.TextColumn("연속봉"),
-    "거래대금":    st.column_config.TextColumn("거래대금"),
-    "차트":        st.column_config.LinkColumn("차트", display_text="📊"),
-    "신호":        st.column_config.TextColumn("신호"),
-    "일목(일봉)":  st.column_config.TextColumn("일목"),
-    "MA크로스":    st.column_config.TextColumn("MA"),
-    "RSI":        st.column_config.TextColumn("RSI"),
-    "CCI":         st.column_config.TextColumn("CCI"),
-    "BB상태":      st.column_config.TextColumn("BB"),
-    "종목명":      st.column_config.TextColumn("종목명"),
-    "현재가":      st.column_config.NumberColumn("현재가"),
-    "외국인지분율":st.column_config.TextColumn("외국인%"),
-    "5MA기울기":   st.column_config.TextColumn("5MA"),
-    "52주위치":    st.column_config.TextColumn("52주"),
-}
 
+    # 사용자께서 제공해주신 col_cfg 정의
+    col_cfg = {
+        "코드":        st.column_config.TextColumn("코드"),
+        "총점":        st.column_config.NumberColumn("점수"),
+        "등락률":      st.column_config.TextColumn("등락"),
+        "이격률":      st.column_config.TextColumn("이격"),
+        "거래량":      st.column_config.TextColumn("거래량"),
+        "연속봉":      st.column_config.TextColumn("연속봉"),
+        "거래대금":    st.column_config.TextColumn("거래대금"),
+        "차트":        st.column_config.LinkColumn("차트", display_text="📊"),
+        "신호":        st.column_config.TextColumn("신호"),
+        "일목(일봉)":  st.column_config.TextColumn("일목"),
+        "MA크로스":    st.column_config.TextColumn("MA"),
+        "RSI":         st.column_config.TextColumn("RSI"),
+        "CCI":         st.column_config.TextColumn("CCI"),
+        "BB상태":      st.column_config.TextColumn("BB"),
+        "종목명":      st.column_config.TextColumn("종목명"),
+        "현재가":      st.column_config.NumberColumn("현재가"),
+        "외국인지분율":st.column_config.TextColumn("외국인%"),
+        "5MA기울기":   st.column_config.TextColumn("5MA"),
+        "52주위치":    st.column_config.TextColumn("52주"),
+    }
+    
+    # 현재 표시할 데이터프레임(disp)에 있는 컬럼들만 config에 남김
+    final_col_cfg = {k: v for k, v in col_cfg.items() if k in disp.columns}
+
+    # 최종적으로 데이터프레임을 화면에 표시
     st.dataframe(
         styled,
         use_container_width=True,
         height=dynamic_height,
-        column_config=col_cfg,
+        column_config=final_col_cfg,
         hide_index=True
     )
+
+
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다.")
         return
