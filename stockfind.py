@@ -130,14 +130,17 @@ def _fmt_ratio(ratio: float) -> str:
     elif ratio >= 5:  return f"{ratio:.2f}% 🟡저비중"
     else:             return f"{ratio:.2f}% ⚪미미"
 
-def get_ma5_slope(price_series):
+def get_ma_slope(series, period=3):
+    """지정된 기간 동안의 이동평균 기울기를 계산합니다."""
     try:
-        ma5 = price_series.rolling(5).mean()
-        if len(ma5) < 4:
+        ma = series.rolling(period).mean()
+        if len(ma) < period:
             return 0
-        slope = ma5.iloc[-1] - ma5.iloc[-3]
-        pct   = slope / ma5.iloc[-3] * 100 if ma5.iloc[-3] != 0 else 0
-        return pct
+        # 최근 값과 (period-1) 이전 값의 차이를 이용해 기울기 계산
+        slope = ma.iloc[-1] - ma.iloc[-period]
+        # 0으로 나누는 것을 방지
+        percent_slope = (slope / ma.iloc[-period]) * 100 if ma.iloc[-period] != 0 else 0
+        return percent_slope
     except Exception:
         return 0
 
@@ -159,7 +162,6 @@ def calc_cci(df, period=20):
     mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
     return (tp - ma) / (0.015 * mad.replace(0, np.nan))
 
-
 # ─────────────────────────────────────────────
 # 점수 기반 신호 결정 (수정됨)
 # ─────────────────────────────────────────────
@@ -167,7 +169,6 @@ def calc_cci(df, period=20):
 def calc_signal_score(last, prev, ichimoku_status, cci_now, cci_prev):
     score = 0
     detail = {}
-
     # 1. 일목균형표 점수
     if '상향돌파' in ichimoku_status: s_ichi = 3
     elif '하향이탈' in ichimoku_status: s_ichi = -3
@@ -206,7 +207,6 @@ def calc_signal_score(last, prev, ichimoku_status, cci_now, cci_prev):
     elif s_macd == 0 and s_cci != 0:   # CCI 신호만 존재
         s_momentum = s_cci
     # 신호가 엇갈리는 경우(s_macd > 0 and s_cci < 0 등)는 0점 처리
-
     score += s_momentum
     detail['모멘텀'] = s_momentum
 
@@ -245,7 +245,6 @@ def calc_signal_score(last, prev, ichimoku_status, cci_now, cci_prev):
 # ─────────────────────────────────────────────
 # 종목 분석 메인 (수정됨)
 # ─────────────────────────────────────────────
-
 def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=True):
     try:
         df_price = get_price_data(code, max_pages=25)
@@ -255,6 +254,7 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
         df = df_price.set_index('날짜').copy()
         
         # --- 지표 계산 ---
+        df['3MA'] = df['종가'].rolling(3).mean()
         df['5MA'] = df['종가'].rolling(5).mean()
         df['20MA'] = df['종가'].rolling(20).mean()
         df['60MA'] = df['종가'].rolling(60).mean()
@@ -279,6 +279,7 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
         
         df['CCI'] = calc_cci(df)
         df['vol_ratio'] = df['거래량'] / df['거래량'].rolling(20).mean()
+        df['ma_slope_3'] = get_ma_slope(df['종가'], period=3)
         
         df_future = pd.DataFrame(index=df.index)
         df_future['senkou_a'] = (df['tenkan_sen'] + df['kijun_sen']) / 2
@@ -320,16 +321,28 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
                     breakdown_days = days_ago
                     break
 
-        if above_now: ichimoku_status = f"🔥 상향돌파({breakout_days}일전)" if breakout_days is not None else "📈 구름대 위"
-        elif below_now: ichimoku_status = f"🧊 하향이탈({breakdown_days}일전)" if breakdown_days is not None else "📉 구름대 아래"
-        else:
+        # *** 개선된 일목균형표 상태 결정 로직 ***
+        if above_now: 
+            ichimoku_status = f"🔥 상향돌파({breakout_days}일전)" if breakout_days is not None else "📈 구름대 위"
+        elif below_now: 
+            ichimoku_status = f"🧊 하향이탈({breakdown_days}일전)" if breakdown_days is not None else "📉 구름대 아래"
+        else: # 구름대 내부
             prior_rows = [prev, prev2, prev3, prev4]
             was_above = any(r['종가'] > cloud_top(r) for r in prior_rows)
             was_below = any(r['종가'] < cloud_bot(r) for r in prior_rows)
-            if was_above and not was_below: ichimoku_status = "⚠️ 구름대하락진입"
-            elif was_below and not was_above: ichimoku_status = "🌱 구름대상승진입"
-            else: ichimoku_status = "🌫️ 구름대 내부"
             
+            ma_slope_recent = last.get('ma_slope_3', 0)
+
+            if was_above and not was_below: # 위에서 아래로 진입
+                ichimoku_status = "⚠️ 구름대하락진입"
+            elif was_below and not was_above: # 아래에서 위로 진입
+                if ma_slope_recent > 0: # 단기 추세가 상승일 때만
+                    ichimoku_status = "🌱 구름대상승진입"
+                else: # 단기 추세가 상승이 아니면
+                    ichimoku_status = "🌫️ 구름대 내부"
+            else: # 그 외 (계속 내부에 있었거나, 위아래를 오갔을 경우)
+                ichimoku_status = "🌫️ 구름대 내부"
+
         def ma_cross(l, p, ma_col):
             if p[price_col] <= p[ma_col] and l[price_col] > l[ma_col]: return "🔥GC"
             if p[price_col] >= p[ma_col] and l[price_col] < l[ma_col]: return "🧊DC"
@@ -377,10 +390,10 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
     except Exception as e:
         return None
 
-
 # ─────────────────────────────────────────────
 # 스타일 데이터프레임 표시 (이하 코드는 변경 없음)
 # ─────────────────────────────────────────────
+
 COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
            '총점', '신호',
            '일목(일봉)', 'MA크로스',
@@ -450,8 +463,10 @@ def style_pct(val):
 
 def compress_display(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
-    ichi_map = {"🔥 최근 상향돌파": "🔥상향돌파", "🧊 최근 하향이탈": "🧊하향이탈", "📈 구름대 위": "📈위", "📉 구름대 아래": "📉아래", "🌫️ 구름대 진입": "🌫️진입"}
-    d['일목(일봉)'] = d['일목(일봉)'].replace(ichi_map)
+    ichi_map = {"🔥 상향돌파": "🔥상향돌파", "🧊 하향이탈": "🧊하향이탈", "📈 구름대 위": "📈위", "📉 구름대 아래": "📉아래", "🌫️ 구름대 내부": "🌫️내부", "⚠️ 구름대하락진입":"⚠️하락진입", "🌱 구름대상승진입":"🌱상승진입"}
+    # 정규식을 사용하여 괄호 안의 내용을 제거
+    d['일목(일봉)'] = d['일목(일봉)'].str.replace(r'\s*\([^)]*\)', '', regex=True).replace(ichi_map, regex=False)
+
     def compress_ma(v):
         parts = str(v).split(' ')
         out = []
@@ -516,7 +531,7 @@ def show_styled_dataframe(dataframe):
     
     st.dataframe(
         styled,
-        use_container_width=True,
+        use_container_width=True, # *** 컬럼 너비 자동 조절 기능 적용 ***
         height=dynamic_height,
         column_config=col_cfg,
         hide_index=True
@@ -526,7 +541,7 @@ def show_styled_dataframe(dataframe):
 # UI
 # ─────────────────────────────────────────────
 
-st.title("🛡️ 스마트 데이터 스캐너 v4.2 (점수 로직 개선)") # 버전 업데이트
+st.title("🛡️ 스마트 데이터 스캐너 v4.3 (로직 개선)") # 버전 업데이트
 st.sidebar.header("설정")
 market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
 selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
@@ -539,6 +554,7 @@ use_investor = st.sidebar.checkbox(
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
 **📊 12단계 신호 기준**
+
 **[매수 계열]**
 | 신호 | 의미 |
 |:---|:---|
@@ -546,6 +562,7 @@ st.sidebar.markdown("""
 | 📈 매수관심 | 전환신호, 이격률 양호 |
 | 🌱 진입준비 | 전환신호 1개, 타이밍 양호 |
 | 🔄 바닥탐색 | 구름대 아래+회복 조짐 |
+
 **[보유/중립 계열]**
 | 신호 | 의미 |
 |:---|:---|
@@ -553,6 +570,7 @@ st.sidebar.markdown("""
 | 🔼 추세상승 | 많이 오름, 신규진입 주의 |
 | 🌫️ 구름대내부 | 방향 불명확 횡보 |
 | ⏸️ 관망 | 신호 없음 |
+
 **[위험/하락 계열]**
 | 신호 | 의미 |
 |:---|:---|
@@ -569,7 +587,6 @@ st.subheader("📊 진단 및 필터링")
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 total_metric, buy_metric, entry_metric = c1.empty(), c2.empty(), c3.empty()
 caution_metric, fall_metric, sell_metric = c4.empty(), c5.empty(), c6.empty()
-
 total_metric.metric("전체", "0개")
 buy_metric.metric("매수계열", "0개")
 entry_metric.metric("진입준비", "0개")
@@ -580,7 +597,6 @@ sell_metric.metric("매도관심↓", "0개")
 fb1,fb2,fb3,fb4,fb5,fb6,fb7,fb8 = st.columns(8)
 if 'filter' not in st.session_state:
     st.session_state.filter = "전체"
-
 if fb1.button("🔄전체", use_container_width=True): st.session_state.filter = "전체"
 if fb2.button("🔥📈매수", use_container_width=True): st.session_state.filter = "매수"
 if fb3.button("🌱진입준비", use_container_width=True): st.session_state.filter = "진입준비"
@@ -666,7 +682,6 @@ if not start_btn and 'df_all' in st.session_state:
             f'text-align:center;font-weight:bold;">📧 현재 리스트 Outlook 전송</div></a>',
             unsafe_allow_html=True
         )
-
 elif 'df_all' not in st.session_state:
     with main_result_area:
         st.info("왼쪽 사이드바에서 '분석 시작' 버튼을 눌러주세요.")
