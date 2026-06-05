@@ -783,9 +783,10 @@ def show_styled_dataframe(dataframe):
     )
 
 # ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # UI
 # ─────────────────────────────────────────────
-st.title("🛡️ 스마트 데이터 스캐너 v5")
+st.title("🛡️ 스마트 데이터 스캐너 v5.1") # 버전 업데이트
 st.sidebar.header("설정")
 market         = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
 selected_pages = st.sidebar.multiselect("분석 페이지 선택", options=list(range(1, 41)), default=[1])
@@ -815,6 +816,7 @@ c1,c2,c3,c4,c5,c6 = st.columns(6)
 m_total   = c1.empty(); m_timing = c2.empty(); m_ready = c3.empty()
 m_watch   = c4.empty(); m_caution= c5.empty(); m_sell  = c6.empty()
 
+# 초기 메트릭 설정
 for m, lbl in [(m_total,"전체"),(m_timing,"🎯타이밍"),(m_ready,"📈준비"),
                (m_watch,"🔔관찰"),(m_caution,"⚠️주의"),(m_sell,"📉매도/하락")]:
     m.metric(lbl, "0개")
@@ -835,23 +837,19 @@ main_result_area = st.empty()
 
 def update_metrics(df):
     m_total.metric("전체",       f"{len(df)}개")
-    m_timing.metric("🎯타이밍",  f"{len(df[df['신호'].str.contains('매수타이밍', regex=False)])}개")
-    m_ready.metric("📈준비",     f"{len(df[df['신호'].str.contains('매수준비',   regex=False)])}개")
-    m_watch.metric("🔔관찰",     f"{len(df[df['신호'].str.contains('관찰등록',   regex=False)])}개")
-    m_caution.metric("⚠️주의",   f"{len(df[df['신호'].str.contains('구름대주의', regex=False)])}개")
-    m_sell.metric("📉매도/하락", f"{len(df[df['신호'].str.contains('매도|하락',  regex=True)])}개")
+    m_timing.metric("🎯타이밍",  f"{len(df[df['신호'].str.contains('매수타이밍', na=False)])}개")
+    m_ready.metric("📈준비",     f"{len(df[df['신호'].str.contains('매수준비',   na=False)])}개")
+    m_watch.metric("🔔관찰",     f"{len(df[df['신호'].str.contains('관찰등록',   na=False)])}개")
+    m_caution.metric("⚠️주의",   f"{len(df[df['신호'].str.contains('구름대주의', na=False)])}개")
+    m_sell.metric("📉매도/하락", f"{len(df[df['신호'].str.contains('매도|하락',  regex=True, na=False)])}개")
 
 def apply_filter(df, f):
     m = {
-        "타이밍": "매수타이밍",
-        "준비":   "매수준비",
-        "관찰":   "관찰등록",
-        "홀딩":   "홀딩",
-        "주의":   "구름대주의",
-        "매도":   "매도|하락",
+        "타이밍": "매수타이밍", "준비": "매수준비", "관찰": "관찰등록",
+        "홀딩": "홀딩", "주의": "구름대주의", "매도": "매도|하락",
     }
     if f in m:
-        return df[df['신호'].str.contains(m[f], regex=(f == "매도"))]
+        return df[df['신호'].str.contains(m[f], regex=(f == "매도"), na=False)]
     return df
 
 SIG_ORDER = {
@@ -859,11 +857,12 @@ SIG_ORDER = {
     "🌫️": 5, "⚠️": 6, "🔄": 7, "📉": 8, "🧊": 9,
 }
 
+# 분석 시작 버튼 로직
 if start_btn:
     st.session_state.filter = "전체"
     market_df = get_market_sum_pages(selected_pages, market)
     if not market_df.empty:
-        results      = []
+        results = []
         foreign_dict = {}
         if use_investor:
             with st.spinner(f"📡 {market} 외국인 지분율 수집 중..."):
@@ -871,46 +870,60 @@ if start_btn:
             st.info(f"✅ {len(foreign_dict):,}개 종목 수집 완료")
             
         pb = st.progress(0, text="분석 시작...")
+        
+        # 이전 결과 초기화
+        if 'df_all' in st.session_state:
+            del st.session_state['df_all']
+        main_result_area.empty()
+
         for i, (_, row) in enumerate(market_df.iterrows()):
             res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'],
                                 foreign_dict=foreign_dict,
                                 fetch_investor=use_investor)
             if res:
                 results.append(res)
+                # 실시간 업데이트를 위해 매번 데이터프레임 생성 및 표시
                 df_all = pd.DataFrame(results, columns=COLUMNS)
                 df_all['_ord'] = df_all['신호'].apply(
-                    lambda s: next((v for k, v in SIG_ORDER.items() if s.startswith(k)), 5))
+                    lambda s: next((v for k, v in SIG_ORDER.items() if str(s).startswith(k)), 5))
                 df_all = (df_all.sort_values(['_ord', '총점'], ascending=[True, False])
                                 .drop(columns='_ord')
                                 .reset_index(drop=True))
+                
                 st.session_state['df_all'] = df_all
                 update_metrics(df_all)
                 disp_df = apply_filter(df_all, st.session_state.filter)
+                
                 result_title.subheader(f"🔍 결과 ({st.session_state.filter} / {len(disp_df)}개)")
                 with main_result_area:
                     show_styled_dataframe(disp_df)
+            
             pb.progress((i + 1) / len(market_df), text=f"분석 중: {row['종목명']} ({i+1}/{len(market_df)})")
+            
         pb.empty()
         st.success("✅ 분석 완료!")
 
-if not start_btn and 'df_all' in st.session_state:
-    df      = st.session_state['df_all']
-    disp_df = apply_filter(df, st.session_state.filter)
-    update_metrics(df)
+# 분석 시작 버튼을 누르지 않았을 때 (필터링 등) 또는 분석 완료 후
+if 'df_all' in st.session_state and not st.session_state['df_all'].empty:
+    df_all = st.session_state['df_all']
+    update_metrics(df_all)
+    disp_df = apply_filter(df_all, st.session_state.filter)
     result_title.subheader(f"🔍 결과 ({st.session_state.filter} / {len(disp_df)}개)")
     with main_result_area:
         show_styled_dataframe(disp_df)
-    if not disp_df.empty:
+        
+    # 분석이 끝난 후에만 이메일 전송 버튼 표시
+    if not start_btn and not disp_df.empty:
         summary = disp_df[['종목명','현재가','총점','신호','일목(일봉)']].to_string(index=False)
         body    = urllib.parse.quote(f"주식 분석 리포트\n\n{summary}")
         st.markdown(
-            f'<a href="mailto:?subject=주식리포트&body={body}" target="_self"'
-            f' style="text-decoration:none;">'
-            f'<div style="background:#0078d4;color:white;padding:15px;'
-            f'border-radius:8px;text-align:center;font-weight:bold;">'
+            f'<a href="mailto:?subject=주식리포트&body={body}" target="_self" style="text-decoration:none;">'
+            f'<div style="background:#0078d4;color:white;padding:15px;border-radius:8px;text-align:center;font-weight:bold;">'
             f'📧 현재 리스트 Outlook 전송</div></a>',
             unsafe_allow_html=True
         )
-elif 'df_all' not in st.session_state:
+# 앱 첫 실행 시
+elif not start_btn:
     with main_result_area:
         st.info("왼쪽 사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
