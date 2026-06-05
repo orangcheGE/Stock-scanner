@@ -359,7 +359,7 @@ def calc_weekly_ichimoku(df_daily):
             '거래량': 'sum',
         }).dropna()
 
-        if len(wk) < 30:   # 최소 30주 필요
+        if len(wk) < 90:   # 최소 90주(=약 450거래일, 35페이지) 필요
             return "W-데이터부족"
 
         # ── 주봉 일목균형표 ────────────────────────
@@ -376,8 +376,12 @@ def calc_weekly_ichimoku(df_daily):
         sa_fut = ((tenkan + kijun) / 2).shift(26)
         sb_fut = senb.shift(26)
 
+        wk = wk.copy()
         wk['sa'] = sa_fut
         wk['sb'] = sb_fut
+
+        # 현재 주(마지막 행)의 sa/sb 가 NaN이면 1주 전 값으로 채움
+        # (선행스팬은 미래로 시프트되므로 최신 봉에서 바로 쓸 수 있음)
         wk_f = wk.dropna(subset=['sa', 'sb'])
 
         if len(wk_f) < 2:
@@ -527,7 +531,7 @@ def decide_signal(ichimoku_status, score, disparity,
 
 def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=True):
     try:
-        df_price = get_price_data(code, max_pages=25)
+        df_price = get_price_data(code, max_pages=35)
         if df_price is None or len(df_price) < 80:
             return None
 
