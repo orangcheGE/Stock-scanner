@@ -49,7 +49,7 @@ def get_market_sum_pages(page_list, market="KOSPI"):
     return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률': changes})
 
 
-def get_price_data(code, max_pages=25):
+def get_price_data(code, max_pages=60):
     url = f"https://finance.naver.com/item/sise_day.naver?code={code}"
     dfs = []
     for page in range(1, max_pages + 1):
@@ -531,7 +531,7 @@ def decide_signal(ichimoku_status, score, disparity,
 
 def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=True):
     try:
-        df_price = get_price_data(code, max_pages=35)
+        df_price = get_price_data(code, max_pages=50)
         if df_price is None or len(df_price) < 80:
             return None
 
