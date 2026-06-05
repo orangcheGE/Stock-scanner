@@ -49,7 +49,7 @@ def get_market_sum_pages(page_list, market="KOSPI"):
     return pd.DataFrame({'종목코드': codes, '종목명': names, '등락률': changes})
 
 
-def get_price_data(code, max_pages=60):
+def get_price_data(code, max_pages=50):
     url = f"https://finance.naver.com/item/sise_day.naver?code={code}"
     dfs = []
     for page in range(1, max_pages + 1):
@@ -531,7 +531,7 @@ def decide_signal(ichimoku_status, score, disparity,
 
 def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=True):
     try:
-        df_price = get_price_data(code, max_pages=50)
+        df_price = get_price_data(code, max_pages=60)
         if df_price is None or len(df_price) < 80:
             return None
 
@@ -655,6 +655,24 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
         elif cci_now  < -100: cci_d = f"{cv} 💧과매도"
         else:                 cci_d = f"{cv} ➖중립"
 
+        # BB 상태
+        bb_sq, _ = get_bb_squeeze(df_f['BB_width'])
+        if   last['종가'] >= last['BB_upper']: bb_pos = "상단"
+        elif last['종가'] <= last['BB_lower']: bb_pos = "하단"
+        else:                                  bb_pos = "내부"
+        bb_d = f"{bb_sq}/{bb_pos}"
+
+        # 거래량 + 방향성
+        vr     = round(last['vol_ratio'], 1) if not pd.isna(last['vol_ratio']) else 1.0
+        up_day = last['종가'] > prev['종가']
+        if vr >= 2.0:
+            vol_d  = f"{vr}배📈급등" if up_day else f"{vr}배📉급락"
+            vol_up = up_day
+        elif vr < 0.5:
+            vol_d, vol_up = f"{vr}배⚠️", False
+        else:
+            vol_d, vol_up = f"{vr}배", up_day and vr >= 1.2
+
         # 연속봉
         consec, consec_d = detect_consecutive_candles(df_f)
 
@@ -757,7 +775,7 @@ COLUMNS = [
     '코드', '종목명', '등락률', '현재가', '이격률',
     '총점', '신호',
     '일목(일봉)', '일목(주봉)', 'MA크로스',
-    'CCI', 
+    'CCI', 'BB상태',
     '거래량', '연속봉', '거래대금',
     '외국인지분율', '5MA기울기',
     '타이밍(20MA|MACD|CCI)',
@@ -953,10 +971,13 @@ def show_styled_dataframe(dataframe):
         "일목(주봉)":        st.column_config.TextColumn("일목(주)"),
         "MA크로스":          st.column_config.TextColumn("MA"),
         "CCI":               st.column_config.TextColumn("CCI"),
+        "BB상태":            st.column_config.TextColumn("BB"),
         "종목명":            st.column_config.TextColumn("종목명"),
         "현재가":            st.column_config.NumberColumn("현재가"),
         "외국인지분율":      st.column_config.TextColumn("외국인%"),
-           }
+        "5MA기울기":         st.column_config.TextColumn("5MA"),
+        "타이밍(20MA|MACD|CCI)": st.column_config.TextColumn("20MA|MACD|CCI"),
+    }
 
     st.dataframe(
         styled,
