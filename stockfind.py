@@ -605,7 +605,21 @@ def analyze_stock(code, name, current_change, foreign_dict=None, fetch_investor=
         else:
             vol_d, vol_up = f"{vr}배", up_day and vr >= 1.2
         # 연속봉
-        consec, consec_d = detect_consecutive_candles(df_f)
+                # ── 주간 리샘플링 및 주간 연속봉 계산 ───────────────────
+        try:
+            df_for_weekly = df_price[['날짜', '시가', '고가', '저가', '종가']].copy()
+            df_for_weekly.index = pd.to_datetime(df_for_weekly['날짜'])
+            df_weekly_candles = df_for_weekly.resample('W-FRI').agg({
+                '시가': 'first',
+                '고가': 'max',
+                '저가': 'min',
+                '종가': 'last'
+            }).dropna()
+        except:
+            df_weekly_candles = df_f  # 실패 시 일간 데이터로 대체
+
+        consec, consec_d = detect_consecutive_candles(df_weekly_candles)
+
         # 거래대금
         avg_amt, amt_d, amt_ok = calc_trading_amount(df_f)
         # 이격률
