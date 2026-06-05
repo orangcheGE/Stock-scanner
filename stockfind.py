@@ -176,45 +176,54 @@ def get_ma5_slope_series(price_series):
 # 매수 타이밍 보조 함수
 # ─────────────────────────────────────────────
 
-def detect_20ma_touch(df_final):
-    """
-    20MA 눌림목 터치 감지
-    - 전일 20MA 아래 → 오늘 20MA 위  : 골든터치
-    - 현재 20MA ±3% 이내 + 상승 중  : 근접
-    - 최근 5일 내 터치 후 반등 중   : N일전 터치
-    반환: (터치여부, 표시문자열)
-    """
-    try:
-        last  = df_final.iloc[-1]
-        prev  = df_final.iloc[-2]
-        price = last['종가']
-        ma20  = last['20MA']
-        if ma20 <= 0:
-            return False, f"이격{0:+.1f}%"
-        disp = (price - ma20) / ma20 * 100
-        prev_disp = (prev['종가'] - prev['20MA']) / prev['20MA'] * 100 if prev['20MA'] > 0 else 0
+# ─────────────────────────────────────────────
+# 지표 계산 (detect_20ma_touch 함수만 수정)
+# ─────────────────────────────────────────────
 
-        # 골든터치: 어제 아래 → 오늘 위
+def detect_20ma_touch(df_final):
+    """20MA 눌림목 터치 감지, (터치여부, 표시문자열) 반환"""
+    try:
+        # 데이터프레임이 충분히 길지 않으면 IndexError가 발생할 수 있음
+        if len(df_final) < 2:
+            return False, "-"
+
+        last = df_final.iloc[-1]
+        prev = df_final.iloc[-2]
+        price = last['종가']
+        ma20 = last['20MA']
+
+        # MA 값이 없으면 계산 불가
+        if pd.isna(ma20) or ma20 <= 0 or pd.isna(prev['20MA']) or prev['20MA'] <= 0:
+            return False, "N/A"
+
+        disp = (price - ma20) / ma20 * 100
+        prev_disp = (prev['종가'] - prev['20MA']) / prev['20MA'] * 100
+
+        # 시나리오 1: 골든터치 (어제 아래 -> 오늘 위)
         if prev_disp < 0 and disp >= 0:
             return True, "🎯20MA골든"
 
-        # 현재 ±3% 이내 + 상승 중
+        # 시나리오 2: 20MA 근접 (현재 ±3% 이내 + 상승 중)
         if -3 <= disp <= 3 and price >= prev['종가']:
             return True, f"🎯20MA근접({disp:+.1f}%)"
 
-        # 최근 1~5일 내 터치 후 반등
-        for d in range(1, 6):
-            if len(df_final) < d + 2:
-                break
-            r      = df_final.iloc[-(d + 1)]
-            r_disp = (r['종가'] - r['20MA']) / r['20MA'] * 100 if r['20MA'] > 0 else 0
-            if -3 <= r_disp <= 3 and price > r['종가']:
+        # 시나리오 3: N일 전 터치 (최근 5일 내 터치 후 반등)
+        for d in range(1, min(6, len(df_final) - 1)):
+            past_row = df_final.iloc[-(d + 1)]
+            past_ma20 = past_row['20MA']
+            if pd.isna(past_ma20) or past_ma20 <= 0:
+                continue
+            
+            past_disp = (past_row['종가'] - past_ma20) / past_ma20 * 100
+            if -3 <= past_disp <= 3 and price > past_row['종가']:
                 return True, f"🎯20MA+{d}일"
 
+        # 위 시나리오에 해당하지 않는 경우
         return False, f"이격{disp:+.1f}%"
-    except:
-        return False, "-"
 
+    except IndexError:
+        # .iloc[-1] 또는 .iloc[-2] 접근 시 데이터가 부족할 경우
+        return False, "-"
 
 def detect_macd_turn(df_final, lookback=5):
     """
