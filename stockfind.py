@@ -214,7 +214,7 @@ def calc_signal_score(last, prev, ichimoku_status, w_ichimoku_status, cci_now, c
     if is_falling_entry: signal = "⚠️ 구름대주의"
     elif is_weekly_breakout and momentum_up: signal = "🚀 주간돌파!"
     elif (score >= 5 and cloud_breakout and momentum_up): signal = "🔥 적극매수"
-    elif (score >= 3 and not is_high_disp && (cloud_breakout or momentum_up)): signal = "📈 매수관심"
+    elif (score >= 3 and not is_high_disp and (cloud_breakout or momentum_up)): signal = "📈 매수관심"
     elif (score >= 1 and disparity <= 6 and has_turn and not is_falling_entry): signal = "🌱 진입준비"
     elif (is_below_cloud and momentum_up and score >= 0): signal = "🔄 바닥탐색"
     elif (is_below_cloud and momentum_down): signal = "🔻 하락가속"
