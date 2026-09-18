@@ -571,7 +571,11 @@ def show_styled_dataframe(dataframe):
 st.title("🛡️ 스마트 데이터 스캐너 v4.4 (코스피 200 최적화)")
 st.sidebar.header("설정")
 market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
-selected_pages = st.sidebar.multiselect("분석 페이지 선택 (페이지당 100개)", options=list(range(1, 3)), default=[1])
+selected_pages = st.sidebar.multiselect(
+    "분석 페이지 선택 (페이지당 100개, KOSPI 전체=25페이지)",
+    options=list(range(1, 26)),   # 1~25페이지 (2480개 ÷ 100 = 25페이지)
+    default=[1]
+)
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
 **📊 13단계 신호 기준**
