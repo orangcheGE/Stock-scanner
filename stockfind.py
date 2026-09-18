@@ -22,51 +22,51 @@ def get_headers():
 
 def get_market_sum_pages(page_list, market="KOSPI"):
     """
-    [사용자님 분석 반영] page_size를 200으로 전면 확장하여,
-    2페이지 클릭 시 101위~200위 영역까지 누수 없이 초고속으로 수집합니다.
+    m.stock.naver.com API로 KOSPI/KOSDAQ 전체 종목 수집
+    pageSize=100 기준, page_list=[1,2,3...] 으로 페이지 지정
     """
     all_stocks = []
-    # [수정 완료] 한 번에 최대치인 200개 종목을 통째로 긁어오도록 연동 완료!
-    page_size = 200  
-    
-    # KOSPI 200 데이터 연동을 위한 indexType 설정
-    index_type = "KOSPI200" if market == "KOSPI" else "KOSDAQ150"
+    market_type = "KOSPI" if market == "KOSPI" else "KOSDAQ"
 
     for page in page_list:
-        # 1페이지면 startIdx=0, 2페이지면 startIdx=200으로 다이내믹 변환 완료
-        start_idx = (page - 1) * page_size
-        url = f"https://stock.naver.com/api/domestic/market/stock/default?tradeType=KRX&indexType={index_type}&orderType=marketSum&startIdx={start_idx}&pageSize={page_size}"
-        
+        url = (f"https://m.stock.naver.com/api/stocks/marketValue/{market_type}"
+               f"?page={page}&pageSize=100")
         try:
-            # verify=False 옵션을 기본 장착하여 사내망 방화벽을 우회합니다.
-            res = requests.get(url, headers=get_headers(), timeout=10, verify=False)
+            res = requests.get(url, headers=get_headers(),
+                               timeout=10, verify=False)
             res.raise_for_status()
             data = res.json()
-            
-            stocks_list = data if isinstance(data, list) else data.get('items', [])
-            
+
+            # 실제 응답 구조: {"stocks": [...], "totalCount": N}
+            stocks_list = (data.get('stocks') or
+                           data.get('items') or
+                           data.get('stockList') or
+                           (data if isinstance(data, list) else []))
+
             for item in stocks_list:
-                # [소문자 규격 해결 완료] 실시간 주가(nowPrice) 및 오늘 등락률(prevChangeRate) 추출
-                code = item.get('itemcode')
-                name = item.get('itemname')
-                price_val = item.get('nowPrice', 0)
-                flu_ratio = item.get('prevChangeRate', 0.0)
-                
-                fl_val = float(flu_ratio) if flu_ratio is not None else 0.0
+                code      = item.get('itemCode') or item.get('itemcode')
+                name      = item.get('stockName') or item.get('itemname')
+                price_val = item.get('closePrice') or item.get('nowPrice', 0)
+                flu_ratio = item.get('fluctuationsRatio') or item.get('prevChangeRate', 0.0)
+
+                fl_val    = float(flu_ratio) if flu_ratio is not None else 0.0
                 fl_prefix = "+" if fl_val > 0 else ""
-                flu_str = f"{fl_prefix}{round(fl_val, 2)}%"
+                flu_str   = f"{fl_prefix}{round(fl_val, 2)}%"
 
                 if code and name:
                     all_stocks.append({
-                        '종목코드': code,
-                        '종목명': name,
-                        '등락률': flu_str,
-                        '현재가': int(price_val) if price_val else 0
+                        '종목코드': str(code).zfill(6),
+                        '종목명':   name,
+                        '등락률':   flu_str,
+                        '현재가':   int(str(price_val).replace(',', ''))
+                                   if price_val else 0
                     })
+
             time.sleep(0.1)
-        except Exception as e:
+
+        except Exception:
             continue
-            
+
     if not all_stocks:
         return pd.DataFrame(columns=['종목코드', '종목명', '등락률', '현재가'])
     return pd.DataFrame(all_stocks)
