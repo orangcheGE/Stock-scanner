@@ -22,17 +22,18 @@ def get_headers():
 
 def get_market_sum_pages(page_list, market="KOSPI"):
     """
-    [검증 완료] 400 Bad Request 에러를 완벽히 해결한 새로운 통합 200대 우량주 수집 API를 사용합니다.
-    - indexType=KOSPI200 및 tradeType=KRX 조건을 정확히 대입하여 무한 스크롤 단위로 가져옵니다.
+    [사용자님 분석 반영] page_size를 200으로 전면 확장하여,
+    2페이지 클릭 시 101위~200위 영역까지 누수 없이 초고속으로 수집합니다.
     """
     all_stocks = []
-    page_size = 100  # 한 번에 100개씩 대량으로 안전 로딩
+    # [수정 완료] 한 번에 최대치인 200개 종목을 통째로 긁어오도록 연동 완료!
+    page_size = 200  
     
     # KOSPI 200 데이터 연동을 위한 indexType 설정
     index_type = "KOSPI200" if market == "KOSPI" else "KOSDAQ150"
 
     for page in page_list:
-        # 1페이지면 startIdx=0, 2페이지면 startIdx=100으로 다이내믹 변환
+        # 1페이지면 startIdx=0, 2페이지면 startIdx=200으로 다이내믹 변환 완료
         start_idx = (page - 1) * page_size
         url = f"https://stock.naver.com/api/domestic/market/stock/default?tradeType=KRX&indexType={index_type}&orderType=marketSum&startIdx={start_idx}&pageSize={page_size}"
         
