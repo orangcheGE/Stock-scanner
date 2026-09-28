@@ -73,7 +73,7 @@ def get_market_sum_pages(page_list, market="KOSPI"):
 
 def get_price_data(code, max_pages=10, page_size=60):
     """
-    [검증 완료] 신규 비동기 일별 시세 API를 사용하여 
+    [검증 완료] 신규 비동기 일별 시세 API를 사용하여
     단 10번의 호출로 600일 치 가격 데이터를 고속으로 긁어옵니다.
     """
     dfs = []
@@ -141,6 +141,27 @@ def calc_cci(df, period=20):
     mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
     return (tp - ma) / (0.015 * mad.replace(0, np.nan))
 
+def get_market_trend(market):
+    index_code = "0001" if market == "KOSPI" else "1001"
+    index_name = "코스피" if market == "KOSPI" else "코스닥"
+    df = get_price_data(index_code, max_pages=3, page_size=60)
+    if df is None or len(df) < 60:
+        return f"{index_name} 추세: 데이터 부족"
+
+    close = df['종가']
+    current = close.iloc[-1]
+    ma20 = close.rolling(20).mean().iloc[-1]
+    ma60 = close.rolling(60).mean().iloc[-1]
+    change_20 = (current / close.iloc[-21] - 1) * 100
+
+    if current > ma20 and ma20 > ma60:
+        status = "상승 추세"
+    elif current < ma20 and ma20 < ma60:
+        status = "하락 추세"
+    else:
+        status = "혼조/횡보"
+    return f"{index_name} 추세: {status} | 현재가 {current:,.0f} | 20일 {change_20:+.1f}%"
+
 def calc_signal_score(last, prev, ichimoku_status, w_ichimoku_status, cci_now, cci_prev):
     score = 0
     detail = {}
@@ -182,12 +203,8 @@ def calc_signal_score(last, prev, ichimoku_status, w_ichimoku_status, cci_now, c
     elif cci_prev > 100 and cci_now <= 100: s_cci = -2
     else: s_cci = 0
 
-    # 모멘텀 통합
-    s_momentum = 0
-    if s_macd > 0 and s_cci > 0: s_momentum = max(s_macd, s_cci)
-    elif s_macd < 0 and s_cci < 0: s_momentum = min(s_macd, s_cci)
-    elif s_macd != 0 and s_cci == 0: s_momentum = s_macd
-    elif s_macd == 0 and s_cci != 0: s_momentum = s_cci
+    # MACD를 주 모멘텀으로 사용하고, MACD가 중립일 때만 CCI를 보조로 사용
+    s_momentum = s_macd if s_macd != 0 else s_cci
     score += s_momentum
     detail['모멘텀'] = s_momentum
 
@@ -201,12 +218,23 @@ def calc_signal_score(last, prev, ichimoku_status, w_ichimoku_status, cci_now, c
     momentum_down = detail['모멘텀'] <= -1
     has_turn = cloud_breakout or cloud_breakdown or momentum_up or momentum_down
 
+    vol_ratio = last['vol_ratio'] if not pd.isna(last['vol_ratio']) else 1.0
+    down_volume_surge = last['종가'] < prev['종가'] and vol_ratio >= 2.0
+    low_volume_breakout = cloud_breakout and vol_ratio < 1.0
+    if down_volume_surge:
+        score -= 2
+        detail['거래량위험'] = -2
+    else:
+        detail['거래량위험'] = 0
+
     disparity = ((last['종가'] / last['20MA']) - 1) * 100 if last['20MA'] > 0 else 0
     is_high_disp = disparity > 15
     is_low_disp = disparity < -10
     is_weekly_breakout = '상향돌파' in w_ichimoku_status
 
-    if is_falling_entry: signal = "⚠️ 구름대주의"
+    if down_volume_surge: signal = "🚨 하락거래량급증"
+    elif low_volume_breakout: signal = "⚠️ 거래량없는돌파"
+    elif is_falling_entry: signal = "⚠️ 구름대주의"
     elif is_weekly_breakout and momentum_up: signal = "🚀 주간돌파!"
     elif (score >= 5 and cloud_breakout and momentum_up): signal = "🔥 적극매수"
     elif (score >= 3 and not is_high_disp and (cloud_breakout or momentum_up)): signal = "📈 매수관심"
@@ -253,6 +281,12 @@ def analyze_stock(code, name, current_change):
 
         df['CCI'] = calc_cci(df)
         df['vol_ratio'] = df['거래량'] / df['거래량'].rolling(20).mean()
+        true_range = pd.concat([
+            df['고가'] - df['저가'],
+            (df['고가'] - df['종가'].shift(1)).abs(),
+            (df['저가'] - df['종가'].shift(1)).abs()
+        ], axis=1).max(axis=1)
+        df['ATR14'] = true_range.rolling(14).mean()
 
         df_future = pd.DataFrame(index=df.index)
         df_future['senkou_a'] = (df['tenkan_sen'] + df['kijun_sen']) / 2
@@ -410,6 +444,9 @@ def analyze_stock(code, name, current_change):
         score, signal, detail = calc_signal_score(
             last, prev, ichimoku_status, w_ichimoku_status, cci_now, cci_prev
         )
+        atr_value = last['ATR14']
+        stop_reference = (max(0, int(last['종가'] - 1.5 * atr_value))
+                  if pd.notna(atr_value) else 0)
 
         chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
 
@@ -418,7 +455,7 @@ def analyze_stock(code, name, current_change):
             int(last['종가']), disparity_fmt,
             score, signal,
             ichimoku_status, w_ichimoku_status, ma_text,
-            cci_display, vol_display,
+            cci_display, vol_display, stop_reference,
             chart_url
         ]
     except Exception as e:
@@ -430,12 +467,14 @@ def analyze_stock(code, name, current_change):
 COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
            '총점', '신호',
            '일목(일봉)', '일목(주봉)', 'MA크로스',
-           'CCI', '거래량',
+           'CCI', '거래량', '손절참고',
            '차트']
 
 def style_signal(val):
     v = str(val)
     if '주간돌파' in v: return 'color:white;background-color:#d32f2f;font-weight:bold;'
+    if '하락거래량급증' in v: return 'color:white;background-color:#6a1b9a;font-weight:bold'
+    if '거래량없는돌파' in v: return 'color:#e65100;font-weight:bold'
     if '적극매수' in v: return 'color:white;background-color:#b71c1c;font-weight:bold'
     if '매수관심' in v: return 'color:#ef5350;font-weight:bold'
     if '진입준비' in v: return 'color:#ff8f00;font-weight:bold'
@@ -547,6 +586,7 @@ def show_styled_dataframe(dataframe):
         "등락률": st.column_config.TextColumn("등락"),
         "이격률": st.column_config.TextColumn("이격"),
         "거래량": st.column_config.TextColumn("거래량"),
+        "손절참고": st.column_config.NumberColumn("손절 참고"),
         "차트": st.column_config.LinkColumn("차트", display_text="📊"),
         "신호": st.column_config.TextColumn("신호"),
         "일목(일봉)": st.column_config.TextColumn("일목(일)"),
@@ -571,11 +611,7 @@ def show_styled_dataframe(dataframe):
 st.title("🛡️ 스마트 데이터 스캐너 v4.4 (코스피 200 최적화)")
 st.sidebar.header("설정")
 market = st.sidebar.radio("시장 선택", ["KOSPI", "KOSDAQ"])
-selected_pages = st.sidebar.multiselect(
-    "분석 페이지 선택 (페이지당 100개, KOSPI 전체=25페이지)",
-    options=list(range(1, 26)),   # 1~25페이지 (2480개 ÷ 100 = 25페이지)
-    default=[1]
-)
+selected_pages = st.sidebar.multiselect("분석 페이지 선택 (페이지당 100개)", options=list(range(1, 3)), default=[1])
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
 **📊 13단계 신호 기준**
@@ -601,12 +637,18 @@ st.sidebar.markdown("""
 | 신호 | 의미 |
 |:---|:---|
 | ⚠️ 구름대주의 | 위→구름대 하락진입 |
+| ⚠️ 거래량없는돌파 | 돌파했지만 평균 거래량 미달 |
+| 🚨 하락거래량급증 | 하락 중 거래량 2배 이상, 매도 위험 |
 | 🔻 하락가속 | 구름대아래+모멘텀↓ |
 | 🔽 추세하락 | 구름대아래+이격률↓ |
 | 📉 매도관심 | 하락전환 총점≤-3 |
 | 🧊 적극매도 | 이탈+모멘텀↓ 총점≤-5 |
 """)
 start_btn = st.sidebar.button("🚀 분석 시작")
+
+market_trend_area = st.empty()
+if 'market_trend' in st.session_state:
+    market_trend_area.info(st.session_state['market_trend'])
 
 st.subheader("📊 진단 및 필터링")
 c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -639,8 +681,8 @@ main_result_area = st.empty()
 
 def update_metrics(df):
     buy_kw = '적극매수|매수관심|주간돌파'
-    fall_kw = '하락가속|추세하락|적극매도'
-    sell_kw = '매도관심|적극매도'
+    fall_kw = '하락가속|추세하락|적극매도|하락거래량급증'
+    sell_kw = '매도관심|적극매도|하락거래량급증'
     total_metric.metric("전체", f"{len(df)}개")
     buy_metric.metric("매수계열", f"{len(df[df['신호'].str.contains(buy_kw, regex=True)])}개")
     entry_metric.metric("진입준비", f"{len(df[df['신호'].str.contains('진입준비|바닥탐색', regex=True)])}개")
@@ -654,12 +696,14 @@ def apply_filter(df, f):
     elif f == "바닥탐색": return df[df['신호'].str.contains("바닥탐색")]
     elif f == "홀딩": return df[df['신호'].str.contains("홀딩유지|추세상승", regex=True)]
     elif f == "구름대주의": return df[df['신호'].str.contains("구름대주의")]
-    elif f == "하락가속": return df[df['신호'].str.contains("하락가속|추세하락", regex=True)]
-    elif f == "매도": return df[df['신호'].str.contains("매도")]
+    elif f == "하락가속": return df[df['신호'].str.contains("하락가속|추세하락|하락거래량급증", regex=True)]
+    elif f == "매도": return df[df['신호'].str.contains("매도|하락거래량급증", regex=True)]
     return df
 
 if start_btn:
     st.session_state.filter = "전체"
+    st.session_state['market_trend'] = get_market_trend(market)
+    market_trend_area.info(st.session_state['market_trend'])
     market_df = get_market_sum_pages(selected_pages, market)
     if not market_df.empty:
         results = []
