@@ -162,7 +162,9 @@ def get_market_trend(market):
         status = "혼조/횡보"
     return f"{index_name} 추세: {status} | 현재가 {current:,.0f} | 20일 {change_20:+.1f}%"
 
-def calc_signal_score(last, prev, ichimoku_status, w_ichimoku_status, cci_now, cci_prev):
+def calc_signal_score(last, prev, ichimoku_status, w_ichimoku_status,
+                      cci_now, cci_prev, weekly_two_bullish=False,
+                      ma20_breakout=False, dual_cloud_breakout=False):
     score = 0
     detail = {}
 
@@ -227,6 +229,14 @@ def calc_signal_score(last, prev, ichimoku_status, w_ichimoku_status, cci_now, c
     else:
         detail['거래량위험'] = 0
 
+    # 주봉 추세 확인과 20일선 돌파는 일목 신호의 신뢰도를 보강한다.
+    if weekly_two_bullish:
+        score += 1
+    if ma20_breakout:
+        score += 1
+    detail['2주양봉'] = 1 if weekly_two_bullish else 0
+    detail['20일선돌파'] = 1 if ma20_breakout else 0
+
     disparity = ((last['종가'] / last['20MA']) - 1) * 100 if last['20MA'] > 0 else 0
     is_high_disp = disparity > 15
     is_low_disp = disparity < -10
@@ -235,6 +245,8 @@ def calc_signal_score(last, prev, ichimoku_status, w_ichimoku_status, cci_now, c
     if down_volume_surge: signal = "🚨 하락거래량급증"
     elif low_volume_breakout: signal = "⚠️ 거래량없는돌파"
     elif is_falling_entry: signal = "⚠️ 구름대주의"
+    elif (dual_cloud_breakout and weekly_two_bullish and ma20_breakout
+          and vol_ratio >= 1.0): signal = "🔥 양·주봉 동시돌파"
     elif is_weekly_breakout and momentum_up: signal = "🚀 주간돌파!"
     elif (score >= 5 and cloud_breakout and momentum_up): signal = "🔥 적극매수"
     elif (score >= 3 and not is_high_disp and (cloud_breakout or momentum_up)): signal = "📈 매수관심"
@@ -342,8 +354,10 @@ def analyze_stock(code, name, current_change):
         # ─── 2. 주봉 지표 및 주봉 일목 구름대 계산 ───
         df_w_final = None
         w_ichimoku_status = "-"
+        weekly_two_bullish = False
 
         df_w = df_price.resample('W', on='날짜').agg({
+            '시가': 'first',
             '종가': 'last',
             '고가': 'max',
             '저가': 'min',
@@ -377,6 +391,10 @@ def analyze_stock(code, name, current_change):
                 w_prev2 = df_w_final.iloc[-3]
                 w_prev3 = df_w_final.iloc[-4]
                 w_prev4 = df_w_final.iloc[-5]
+                weekly_two_bullish = (
+                    w_prev['종가'] > w_prev['시가']
+                    and w_prev2['종가'] > w_prev2['시가']
+                )
 
                 w_price_now = w_last['종가']
                 def w_cloud_top(row): return max(row['senkou_a'], row['senkou_b'])
@@ -440,9 +458,16 @@ def analyze_stock(code, name, current_change):
         disparity = ((last['종가'] / last['20MA']) - 1) * 100 if last['20MA'] > 0 else 0
         disparity_fmt = f"{'+' if disparity >= 0 else ''}{round(disparity, 2)}%"
 
+        ma20_breakout = prev['종가'] <= prev['20MA'] and last['종가'] > last['20MA']
+        dual_cloud_breakout = (
+            '상향돌파' in ichimoku_status
+            and '상향돌파' in w_ichimoku_status
+        )
+
         # --- 점수 및 최종 신호 계산 ---
         score, signal, detail = calc_signal_score(
-            last, prev, ichimoku_status, w_ichimoku_status, cci_now, cci_prev
+            last, prev, ichimoku_status, w_ichimoku_status, cci_now, cci_prev,
+            weekly_two_bullish, ma20_breakout, dual_cloud_breakout
         )
         atr_value = last['ATR14']
         stop_reference = (max(0, int(last['종가'] - 1.5 * atr_value))
@@ -472,6 +497,7 @@ COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
 
 def style_signal(val):
     v = str(val)
+    if '양·주봉 동시돌파' in v: return 'color:white;background-color:#8e24aa;font-weight:bold'
     if '주간돌파' in v: return 'color:white;background-color:#d32f2f;font-weight:bold;'
     if '하락거래량급증' in v: return 'color:white;background-color:#6a1b9a;font-weight:bold'
     if '거래량없는돌파' in v: return 'color:#e65100;font-weight:bold'
@@ -620,6 +646,7 @@ st.sidebar.markdown("""
 | 신호 | 의미 |
 |:---|:---|
 | 🚀 주간돌파! | 주봉 구름대 돌파 + 상승 모멘텀 |
+| 🔥 양·주봉 동시돌파 | 일·주봉 구름대 돌파 + 2주 양봉 + 20일선 돌파 |
 | 🔥 적극매수 | 구름대돌파+모멘텀↑ |
 | 📈 매수관심 | 전환신호, 이격률 양호 |
 | 🌱 진입준비 | 전환신호 1개, 타이밍 양호 |
@@ -680,7 +707,7 @@ result_title = st.empty()
 main_result_area = st.empty()
 
 def update_metrics(df):
-    buy_kw = '적극매수|매수관심|주간돌파'
+    buy_kw = '적극매수|매수관심|주간돌파|양·주봉 동시돌파'
     fall_kw = '하락가속|추세하락|적극매도|하락거래량급증'
     sell_kw = '매도관심|적극매도|하락거래량급증'
     total_metric.metric("전체", f"{len(df)}개")
@@ -691,7 +718,7 @@ def update_metrics(df):
     sell_metric.metric("매도관심↓", f"{len(df[df['신호'].str.contains(sell_kw, regex=True)])}개")
 
 def apply_filter(df, f):
-    if f == "매수": return df[df['신호'].str.contains("적극매수|매수관심|주간돌파", regex=True)]
+    if f == "매수": return df[df['신호'].str.contains("적극매수|매수관심|주간돌파|양·주봉 동시돌파", regex=True)]
     elif f == "진입준비": return df[df['신호'].str.contains("진입준비")]
     elif f == "바닥탐색": return df[df['신호'].str.contains("바닥탐색")]
     elif f == "홀딩": return df[df['신호'].str.contains("홀딩유지|추세상승", regex=True)]
