@@ -162,9 +162,27 @@ def get_market_trend(market):
         status = "혼조/횡보"
     return f"{index_name} 추세: {status} | 현재가 {current:,.0f} | 20일 {change_20:+.1f}%"
 
+def calc_accumulation(last):
+    """20일 누적거래량 급증 + 가격 횡보 = 매집, 거래량 급증 + 하락 = 분산으로 판정."""
+    surge = last['vol_surge20']
+    chg = last['chg20'] * 100 if pd.notna(last['chg20']) else 0.0
+    box = last['box20'] * 100 if pd.notna(last['box20']) else 999.0
+
+    if pd.isna(surge):
+        return 0, "-"
+
+    if surge >= 1.5 and chg <= -7:
+        return -1, f"🚨분산 {surge:.1f}배 {chg:+.1f}%"
+    if surge >= 1.8 and -3 <= chg <= 5 and box <= 20:
+        return 2, f"🎯강한매집 {surge:.1f}배 {chg:+.1f}%"
+    if surge >= 1.3 and -5 <= chg <= 7 and box <= 25:
+        return 1, f"🔍매집의심 {surge:.1f}배 {chg:+.1f}%"
+    return 0, f"{surge:.1f}배 {chg:+.1f}%"
+
 def calc_signal_score(last, prev, ichimoku_status, w_ichimoku_status,
                       cci_now, cci_prev, weekly_two_bullish=False,
-                      ma20_breakout=False, dual_cloud_breakout=False):
+                      ma20_breakout=False, dual_cloud_breakout=False,
+                      accum_level=0):
     score = 0
     detail = {}
 
@@ -237,19 +255,29 @@ def calc_signal_score(last, prev, ichimoku_status, w_ichimoku_status,
     detail['2주양봉'] = 1 if weekly_two_bullish else 0
     detail['20일선돌파'] = 1 if ma20_breakout else 0
 
+    s_accum = {2: 2, 1: 1, -1: -2}.get(accum_level, 0)
+    score += s_accum
+    detail['매집'] = s_accum
+    is_accumulating = accum_level >= 1
+    is_distributing = accum_level == -1
+    accum_breakout = accum_level == 2 and (cloud_breakout or ma20_breakout)
+
     disparity = ((last['종가'] / last['20MA']) - 1) * 100 if last['20MA'] > 0 else 0
     is_high_disp = disparity > 15
     is_low_disp = disparity < -10
     is_weekly_breakout = '상향돌파' in w_ichimoku_status
 
     if down_volume_surge: signal = "🚨 하락거래량급증"
+    elif is_distributing and momentum_down: signal = "🚨 분산의심"
     elif low_volume_breakout: signal = "⚠️ 거래량없는돌파"
     elif is_falling_entry: signal = "⚠️ 구름대주의"
+    elif accum_breakout and momentum_up: signal = "🎯 매집후돌파"
     elif (dual_cloud_breakout and weekly_two_bullish and ma20_breakout
           and vol_ratio >= 1.0): signal = "🔥 양·주봉 동시돌파"
     elif is_weekly_breakout and momentum_up: signal = "🚀 주간돌파!"
     elif (score >= 5 and cloud_breakout and momentum_up): signal = "🔥 적극매수"
     elif (score >= 3 and not is_high_disp and (cloud_breakout or momentum_up)): signal = "📈 매수관심"
+    elif (accum_level == 2 and not is_high_disp and score >= 1): signal = "🧺 매집진행"
     elif (score >= 1 and disparity <= 6 and has_turn and not is_falling_entry): signal = "🌱 진입준비"
     elif (is_below_cloud and momentum_up and score >= 0): signal = "🔄 바닥탐색"
     elif (is_below_cloud and momentum_down): signal = "🔻 하락가속"
@@ -293,6 +321,14 @@ def analyze_stock(code, name, current_change):
 
         df['CCI'] = calc_cci(df)
         df['vol_ratio'] = df['거래량'] / df['거래량'].rolling(20).mean()
+
+        # 최근 20일 누적거래량을 직전 20일 구간과 비교해 매집/분산을 판별한다.
+        vol_sum20 = df['거래량'].rolling(20).sum()
+        df['vol_surge20'] = vol_sum20 / vol_sum20.shift(20).replace(0, np.nan)
+        df['chg20'] = df['종가'] / df['종가'].shift(20) - 1
+        low20 = df['저가'].rolling(20).min()
+        df['box20'] = (df['고가'].rolling(20).max() - low20) / low20.replace(0, np.nan)
+
         true_range = pd.concat([
             df['고가'] - df['저가'],
             (df['고가'] - df['종가'].shift(1)).abs(),
@@ -464,10 +500,12 @@ def analyze_stock(code, name, current_change):
             and '상향돌파' in w_ichimoku_status
         )
 
+        accum_level, accum_display = calc_accumulation(last)
+
         # --- 점수 및 최종 신호 계산 ---
         score, signal, detail = calc_signal_score(
             last, prev, ichimoku_status, w_ichimoku_status, cci_now, cci_prev,
-            weekly_two_bullish, ma20_breakout, dual_cloud_breakout
+            weekly_two_bullish, ma20_breakout, dual_cloud_breakout, accum_level
         )
         atr_value = last['ATR14']
         stop_reference = (max(0, int(last['종가'] - 1.5 * atr_value))
@@ -480,7 +518,7 @@ def analyze_stock(code, name, current_change):
             int(last['종가']), disparity_fmt,
             score, signal,
             ichimoku_status, w_ichimoku_status, ma_text,
-            cci_display, vol_display, stop_reference,
+            cci_display, vol_display, accum_display, stop_reference,
             chart_url
         ]
     except Exception as e:
@@ -492,11 +530,14 @@ def analyze_stock(code, name, current_change):
 COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
            '총점', '신호',
            '일목(일봉)', '일목(주봉)', 'MA크로스',
-           'CCI', '거래량', '손절참고',
+           'CCI', '거래량', '매집(20일)', '손절참고',
            '차트']
 
 def style_signal(val):
     v = str(val)
+    if '매집후돌파' in v: return 'color:white;background-color:#00695c;font-weight:bold'
+    if '매집진행' in v: return 'color:#00897b;font-weight:bold'
+    if '분산의심' in v: return 'color:white;background-color:#37474f;font-weight:bold'
     if '양·주봉 동시돌파' in v: return 'color:white;background-color:#8e24aa;font-weight:bold'
     if '주간돌파' in v: return 'color:white;background-color:#d32f2f;font-weight:bold;'
     if '하락거래량급증' in v: return 'color:white;background-color:#6a1b9a;font-weight:bold'
@@ -545,6 +586,13 @@ def style_cci(val):
     if '과매수' in v: return 'color:#e53935'
     if '과매도' in v: return 'color:#43a047'
     return ''
+
+def style_accum(val):
+    v = str(val)
+    if '강한매집' in v: return 'color:white;background-color:#00695c;font-weight:bold'
+    if '매집의심' in v: return 'color:#00897b;font-weight:bold'
+    if '분산' in v: return 'color:white;background-color:#37474f;font-weight:bold'
+    return 'color:#9e9e9e'
 
 def style_pct(val):
     v = str(val).strip()
@@ -595,6 +643,7 @@ def show_styled_dataframe(dataframe):
         .map(style_ichimoku, subset=['일목(일봉)', '일목(주봉)'])
         .map(style_cci,      subset=['CCI'])
         .map(style_score,    subset=['총점'])
+        .map(style_accum,    subset=['매집(20일)'])
         .map(style_pct,      subset=['등락률', '이격률'])
         .map(lambda x: ('color:#b71c1c;font-weight:bold' if '🔥' in str(x) else
                         'color:#0d47a1;font-weight:bold' if '🧊' in str(x) else
@@ -612,6 +661,7 @@ def show_styled_dataframe(dataframe):
         "등락률": st.column_config.TextColumn("등락"),
         "이격률": st.column_config.TextColumn("이격"),
         "거래량": st.column_config.TextColumn("거래량"),
+        "매집(20일)": st.column_config.TextColumn("매집(20일)", help="최근 20일 누적거래량 ÷ 직전 20일 누적거래량 / 20일 가격변화"),
         "손절참고": st.column_config.NumberColumn("손절 참고"),
         "차트": st.column_config.LinkColumn("차트", display_text="📊"),
         "신호": st.column_config.TextColumn("신호"),
@@ -645,6 +695,8 @@ st.sidebar.markdown("""
 **[매수 계열]**
 | 신호 | 의미 |
 |:---|:---|
+| 🎯 매집후돌파 | 20일 누적거래량 급증 횡보 후 돌파 |
+| 🧺 매집진행 | 거래량만 늘고 가격은 제자리 (대기) |
 | 🚀 주간돌파! | 주봉 구름대 돌파 + 상승 모멘텀 |
 | 🔥 양·주봉 동시돌파 | 일·주봉 구름대 돌파 + 2주 양봉 + 20일선 돌파 |
 | 🔥 적극매수 | 구름대돌파+모멘텀↑ |
@@ -664,6 +716,7 @@ st.sidebar.markdown("""
 | 신호 | 의미 |
 |:---|:---|
 | ⚠️ 구름대주의 | 위→구름대 하락진입 |
+| 🚨 분산의심 | 20일 누적거래량 급증하며 가격 하락 |
 | ⚠️ 거래량없는돌파 | 돌파했지만 평균 거래량 미달 |
 | 🚨 하락거래량급증 | 하락 중 거래량 2배 이상, 매도 위험 |
 | 🔻 하락가속 | 구름대아래+모멘텀↓ |
@@ -678,53 +731,58 @@ if 'market_trend' in st.session_state:
     market_trend_area.info(st.session_state['market_trend'])
 
 st.subheader("📊 진단 및 필터링")
-c1, c2, c3, c4, c5, c6 = st.columns(6)
+c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 total_metric, buy_metric, entry_metric = c1.empty(), c2.empty(), c3.empty()
-caution_metric, fall_metric, sell_metric = c4.empty(), c5.empty(), c6.empty()
+accum_metric = c4.empty()
+caution_metric, fall_metric, sell_metric = c5.empty(), c6.empty(), c7.empty()
 
 total_metric.metric("전체", "0개")
 buy_metric.metric("매수계열", "0개")
 entry_metric.metric("진입준비", "0개")
+accum_metric.metric("매집", "0개")
 caution_metric.metric("구름대주의","0개")
 fall_metric.metric("하락계열", "0개")
 sell_metric.metric("매도관심↓", "0개")
 
-fb1,fb2,fb3,fb4,fb5,fb6,fb7,fb8 = st.columns(8)
+fb1,fb2,fb3,fb4,fb5,fb6,fb7,fb8,fb9 = st.columns(9)
 if 'filter' not in st.session_state:
     st.session_state.filter = "전체"
 
 if fb1.button("🔄전체", use_container_width=True): st.session_state.filter = "전체"
 if fb2.button("🔥📈매수", use_container_width=True): st.session_state.filter = "매수"
-if fb3.button("🌱진입준비", use_container_width=True): st.session_state.filter = "진입준비"
-if fb4.button("🔄바닥탐색", use_container_width=True): st.session_state.filter = "바닥탐색"
-if fb5.button("🛡️홀딩", use_container_width=True): st.session_state.filter = "홀딩"
-if fb6.button("⚠️구름주의", use_container_width=True): st.session_state.filter = "구름대주의"
-if fb7.button("🔻하락가속", use_container_width=True): st.session_state.filter = "하락가속"
-if fb8.button("📉🧊매도", use_container_width=True): st.session_state.filter = "매도"
+if fb3.button("🎯매집", use_container_width=True): st.session_state.filter = "매집"
+if fb4.button("🌱진입준비", use_container_width=True): st.session_state.filter = "진입준비"
+if fb5.button("🔄바닥탐색", use_container_width=True): st.session_state.filter = "바닥탐색"
+if fb6.button("🛡️홀딩", use_container_width=True): st.session_state.filter = "홀딩"
+if fb7.button("⚠️구름주의", use_container_width=True): st.session_state.filter = "구름대주의"
+if fb8.button("🔻하락가속", use_container_width=True): st.session_state.filter = "하락가속"
+if fb9.button("📉🧊매도", use_container_width=True): st.session_state.filter = "매도"
 
 st.markdown("---")
 result_title = st.empty()
 main_result_area = st.empty()
 
 def update_metrics(df):
-    buy_kw = '적극매수|매수관심|주간돌파|양·주봉 동시돌파'
-    fall_kw = '하락가속|추세하락|적극매도|하락거래량급증'
-    sell_kw = '매도관심|적극매도|하락거래량급증'
+    buy_kw = '적극매수|매수관심|주간돌파|양·주봉 동시돌파|매집후돌파'
+    fall_kw = '하락가속|추세하락|적극매도|하락거래량급증|분산의심'
+    sell_kw = '매도관심|적극매도|하락거래량급증|분산의심'
     total_metric.metric("전체", f"{len(df)}개")
     buy_metric.metric("매수계열", f"{len(df[df['신호'].str.contains(buy_kw, regex=True)])}개")
     entry_metric.metric("진입준비", f"{len(df[df['신호'].str.contains('진입준비|바닥탐색', regex=True)])}개")
+    accum_metric.metric("매집", f"{len(df[df['매집(20일)'].str.contains('매집', regex=False)])}개")
     caution_metric.metric("구름대주의", f"{len(df[df['신호'].str.contains('구름대주의')])}개")
     fall_metric.metric("하락계열", f"{len(df[df['신호'].str.contains(fall_kw, regex=True)])}개")
     sell_metric.metric("매도관심↓", f"{len(df[df['신호'].str.contains(sell_kw, regex=True)])}개")
 
 def apply_filter(df, f):
-    if f == "매수": return df[df['신호'].str.contains("적극매수|매수관심|주간돌파|양·주봉 동시돌파", regex=True)]
+    if f == "매수": return df[df['신호'].str.contains("적극매수|매수관심|주간돌파|양·주봉 동시돌파|매집후돌파", regex=True)]
+    elif f == "매집": return df[df['매집(20일)'].str.contains("매집", regex=False)]
     elif f == "진입준비": return df[df['신호'].str.contains("진입준비")]
     elif f == "바닥탐색": return df[df['신호'].str.contains("바닥탐색")]
     elif f == "홀딩": return df[df['신호'].str.contains("홀딩유지|추세상승", regex=True)]
     elif f == "구름대주의": return df[df['신호'].str.contains("구름대주의")]
-    elif f == "하락가속": return df[df['신호'].str.contains("하락가속|추세하락|하락거래량급증", regex=True)]
-    elif f == "매도": return df[df['신호'].str.contains("매도|하락거래량급증", regex=True)]
+    elif f == "하락가속": return df[df['신호'].str.contains("하락가속|추세하락|하락거래량급증|분산의심", regex=True)]
+    elif f == "매도": return df[df['신호'].str.contains("매도|하락거래량급증|분산의심", regex=True)]
     return df
 
 if start_btn:
@@ -765,7 +823,7 @@ if not start_btn and 'df_all' in st.session_state:
         show_styled_dataframe(display_df)
 
     if not display_df.empty:
-        email_summary = display_df[['종목명', '현재가', '총점', '신호', '일목(일봉)', '일목(주봉)']].to_string(index=False)
+        email_summary = display_df[['종목명', '현재가', '총점', '신호', '매집(20일)', '일목(일봉)', '일목(주봉)']].to_string(index=False)
         encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
         mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
         st.markdown(
