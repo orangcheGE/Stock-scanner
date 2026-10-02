@@ -511,7 +511,7 @@ def analyze_stock(code, name, current_change):
         stop_reference = (max(0, int(last['종가'] - 1.5 * atr_value))
                   if pd.notna(atr_value) else 0)
 
-        chart_url = f"https://finance.naver.com/item/fchart.naver?code={code}"
+        chart_url = f"https://finance.daum.net/quotes/A{code}#chart"
 
         return [
             code, name, current_change,
