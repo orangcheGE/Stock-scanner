@@ -1013,7 +1013,7 @@ if start_btn:
                 update_metrics(df_all)
                 display_df = apply_filter(df_all, st.session_state.filter)
                 result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
-                with main_result_area:
+                with main_result_area.container():
                     show_styled_dataframe(display_df)
 
             progress_bar.progress((i + 1) / len(market_df), text=f"분석 중: {row['종목명']} ({i+1}/{len(market_df)})")
@@ -1024,16 +1024,15 @@ if start_btn:
         if not completed_df.empty:
             display_df = apply_filter(completed_df, st.session_state.filter)
             result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
-            with main_result_area:
-                show_styled_dataframe(display_df, selectable=True)
+            main_result_area.empty()
+            show_styled_dataframe(display_df, selectable=True)
 
 if not start_btn and 'df_all' in st.session_state:
     df = st.session_state['df_all']
     display_df = apply_filter(df, st.session_state.filter)
     update_metrics(df)
     result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
-    with main_result_area:
-        show_styled_dataframe(display_df, selectable=True)
+    show_styled_dataframe(display_df, selectable=True)
 
     if not display_df.empty:
         email_summary = display_df[['종목명', '현재가', '총점', '신호', '매집(20일)', '일목(일봉)', '일목(주봉)']].to_string(index=False)
@@ -1046,7 +1045,7 @@ if not start_btn and 'df_all' in st.session_state:
             unsafe_allow_html=True
         )
 elif 'df_all' not in st.session_state:
-    with main_result_area:
+    with main_result_area.container():
         st.info("왼쪽 사이드바에서 '분석 시작' 버튼을 눌러주세요.")
 
 render_watchlist(market)
