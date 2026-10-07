@@ -10,12 +10,19 @@ import os
 import re
 import sqlite3
 import uuid
+import threading
 from datetime import datetime, date
 
 # Bosch 사내망 환경 경고 차단
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 WATCHLIST_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_watchlist.db")
+
+@st.cache_resource
+def get_analysis_job_store():
+    return {"jobs": {}, "lock": threading.Lock()}
+
+ANALYSIS_JOB_STORE = get_analysis_job_store()
 
 def init_watchlist_db():
     with sqlite3.connect(WATCHLIST_DB_PATH) as conn:
@@ -690,6 +697,11 @@ def compress_display(df: pd.DataFrame) -> pd.DataFrame:
     d['신호'] = d['신호'].str.strip()
     return d
 
+def map_cell_style(styler, style_func, subset):
+    if hasattr(styler, "map"):
+        return styler.map(style_func, subset=subset)
+    return styler.applymap(style_func, subset=subset)
+
 def show_styled_dataframe(dataframe, selectable=False):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다.")
@@ -698,11 +710,29 @@ def show_styled_dataframe(dataframe, selectable=False):
         return
     disp = compress_display(dataframe)
     if selectable:
+        selected_codes = set(st.session_state.get("analysis_watch_selected_codes", []))
         editor_df = disp.copy()
-        editor_df.insert(0, "관찰 선택", False)
+        editor_df.insert(0, "관찰 선택", editor_df["코드"].astype(str).isin(selected_codes))
         disabled_columns = [column for column in editor_df.columns if column != "관찰 선택"]
+        editor_styler = editor_df.style
+        editor_styler = map_cell_style(editor_styler, style_signal, ["신호"])
+        editor_styler = map_cell_style(editor_styler, style_ichimoku, ["일목(일봉)", "일목(주봉)"])
+        editor_styler = map_cell_style(editor_styler, style_cci, ["CCI"])
+        editor_styler = map_cell_style(editor_styler, style_score, ["총점"])
+        editor_styler = map_cell_style(editor_styler, style_accum, ["매집(20일)"])
+        editor_styler = map_cell_style(editor_styler, style_pct, ["등락률", "이격률"])
+        editor_styler = map_cell_style(editor_styler, lambda value: (
+                "color:#b71c1c;font-weight:bold" if "🔥" in str(value) else
+                "color:#0d47a1;font-weight:bold" if "🧊" in str(value) else
+                "color:#ef5350" if "📈" in str(value) else
+                "color:#42a5f5" if "📉" in str(value) else ""
+            ), ["MA크로스"])
+        editor_styler = map_cell_style(editor_styler, lambda value: (
+                "color:#ef5350" if "📈" in str(value) else
+                "color:#64b5f6" if "📉" in str(value) else ""
+            ), ["거래량"])
         edited_df = st.data_editor(
-            editor_df,
+            editor_styler,
             use_container_width=True,
             hide_index=True,
             disabled=disabled_columns,
@@ -714,31 +744,29 @@ def show_styled_dataframe(dataframe, selectable=False):
                 ),
                 "차트": st.column_config.LinkColumn("차트", display_text="📊"),
             },
-            key=f"analysis_watch_selector_{st.session_state.get('analysis_run_id', 'current')}_{st.session_state.get('filter', '전체')}",
+            key=f"analysis_watch_selector_{st.session_state.get('analysis_run_id', 'current')}_{st.session_state.get('filter', '전체')}_{len(editor_df)}",
         )
         selected = edited_df[edited_df["관찰 선택"]]
-        st.session_state["analysis_watch_selected"] = selected[["코드", "종목명"]].to_dict("records")
+        selected_stocks = selected[["코드", "종목명"]].to_dict("records")
+        st.session_state["analysis_watch_selected"] = selected_stocks
+        st.session_state["analysis_watch_selected_codes"] = [str(stock["코드"]) for stock in selected_stocks]
         st.caption(f"관찰 목록에 추가할 종목 {len(selected)}개 선택됨")
         return
     dynamic_height = (len(disp) + 1) * 35 + 3
 
-    styled = (
-        disp.style
-        .map(style_signal,   subset=['신호'])
-        .map(style_ichimoku, subset=['일목(일봉)', '일목(주봉)'])
-        .map(style_cci,      subset=['CCI'])
-        .map(style_score,    subset=['총점'])
-        .map(style_accum,    subset=['매집(20일)'])
-        .map(style_pct,      subset=['등락률', '이격률'])
-        .map(lambda x: ('color:#b71c1c;font-weight:bold' if '🔥' in str(x) else
+    styled = disp.style
+    styled = map_cell_style(styled, style_signal, ['신호'])
+    styled = map_cell_style(styled, style_ichimoku, ['일목(일봉)', '일목(주봉)'])
+    styled = map_cell_style(styled, style_cci, ['CCI'])
+    styled = map_cell_style(styled, style_score, ['총점'])
+    styled = map_cell_style(styled, style_accum, ['매집(20일)'])
+    styled = map_cell_style(styled, style_pct, ['등락률', '이격률'])
+    styled = map_cell_style(styled, lambda x: ('color:#b71c1c;font-weight:bold' if '🔥' in str(x) else
                         'color:#0d47a1;font-weight:bold' if '🧊' in str(x) else
                         'color:#ef5350' if '📈' in str(x) else
-                        'color:#42a5f5' if '📉' in str(x) else ''),
-             subset=['MA크로스'])
-        .map(lambda x: ('color:#ef5350' if '📈' in str(x) else
-                        'color:#64b5f6' if '📉' in str(x) else ''),
-             subset=['거래량'])
-    )
+                        'color:#42a5f5' if '📉' in str(x) else ''), ['MA크로스'])
+    styled = map_cell_style(styled, lambda x: ('color:#ef5350' if '📈' in str(x) else
+                        'color:#64b5f6' if '📉' in str(x) else ''), ['거래량'])
 
     col_cfg = {
         "코드": st.column_config.TextColumn("코드"),
@@ -870,6 +898,95 @@ def apply_filter(df, f):
     elif f == "매도": return df[df['신호'].str.contains("매도|하락거래량급증|분산의심", regex=True)]
     return df
 
+def run_stock_analysis_job(job_id, stock_records, job_store):
+    results = []
+    failed = 0
+    total = len(stock_records)
+    try:
+        for index, stock in enumerate(stock_records, start=1):
+            result = analyze_stock(stock["종목코드"], stock["종목명"], stock["등락률"])
+            if result:
+                results.append(result)
+            else:
+                failed += 1
+            with job_store["lock"]:
+                job = job_store["jobs"].get(job_id)
+                if job is None:
+                    return
+                job["rows"] = list(results)
+                job["processed"] = index
+                job["failed"] = failed
+    except Exception as error:
+        with job_store["lock"]:
+            job = job_store["jobs"].get(job_id)
+            if job is not None:
+                job["error"] = str(error)
+    finally:
+        with job_store["lock"]:
+            job = job_store["jobs"].get(job_id)
+            if job is not None:
+                job["done"] = True
+
+@st.fragment(run_every=1)
+def render_analysis_progress(job_id, market_name):
+    with ANALYSIS_JOB_STORE["lock"]:
+        job = ANALYSIS_JOB_STORE["jobs"].get(job_id)
+        if job is None:
+            st.warning("분석 작업 상태를 찾을 수 없습니다. 다시 분석을 시작하세요.")
+            return
+        snapshot = dict(job)
+        snapshot["rows"] = list(job["rows"])
+
+    processed = snapshot["processed"]
+    total = snapshot["total"]
+    done = snapshot["done"]
+    st.subheader(f"분석 결과 ({processed}/{total})")
+    st.progress(processed / total if total else 1.0, text="분석 완료" if done else f"분석 중: {processed}/{total} 종목")
+    if snapshot.get("error"):
+        st.error(f"분석 중 오류가 발생했습니다: {snapshot['error']}")
+    if snapshot["rows"]:
+        dataframe = pd.DataFrame(snapshot["rows"], columns=COLUMNS)
+        dataframe = dataframe.sort_values("총점", ascending=False).reset_index(drop=True)
+        update_metrics(dataframe)
+        display_df = apply_filter(dataframe, st.session_state.get("filter", "전체"))
+        show_styled_dataframe(display_df, selectable=True)
+    else:
+        st.info("분석 결과를 모으는 중입니다. 종목이 분석되는 대로 이 목록에 표시됩니다.")
+
+    selected_stocks = st.session_state.get("analysis_watch_selected", [])
+    st.caption(f"관찰 목록에 추가할 종목 {len(selected_stocks)}개 선택됨")
+    baseline_date = st.date_input(
+        "선택 종목 기준일",
+        value=date.today(),
+        max_value=date.today(),
+        key=f"active_watch_baseline_{job_id}",
+    )
+    if st.button(
+        "체크한 종목 관찰 목록에 추가",
+        key=f"active_watch_add_{job_id}",
+        use_container_width=True,
+        disabled=not selected_stocks,
+    ):
+        init_watchlist_db()
+        added = 0
+        skipped = 0
+        for stock in selected_stocks:
+            code = str(stock["코드"]).zfill(6)
+            try:
+                actual_date, price = get_watch_baseline(code, baseline_date)
+                if save_watch_stock(code, stock["종목명"], market_name, actual_date, price):
+                    added += 1
+                else:
+                    skipped += 1
+            except Exception as error:
+                st.warning(f"{stock['종목명']} ({code}) 추가 실패: {error}")
+        if added:
+            st.success(f"{added}개 종목을 관찰 목록에 추가했습니다.")
+        if skipped:
+            st.info(f"이미 등록된 종목 {skipped}개는 기존 기준을 유지했습니다.")
+    if done:
+        st.success(f"분석 완료: 결과 {len(snapshot['rows'])}개, 분석 실패 {snapshot['failed']}개")
+
 def render_watchlist(market_name):
     init_watchlist_db()
     st.markdown("---")
@@ -993,48 +1110,43 @@ def render_watchlist(market_name):
 if start_btn:
     st.session_state["analysis_run_id"] = uuid.uuid4().hex
     st.session_state["analysis_watch_selected"] = []
+    st.session_state["analysis_watch_selected_codes"] = []
     st.session_state.filter = "전체"
     st.session_state['market_trend'] = get_market_trend(market)
     market_trend_area.info(st.session_state['market_trend'])
     market_df = get_market_sum_pages(selected_pages, market)
     if not market_df.empty:
-        results = []
-        st.session_state['df_all'] = pd.DataFrame()
+        job_id = st.session_state["analysis_run_id"]
+        stock_records = market_df.to_dict("records")
+        with ANALYSIS_JOB_STORE["lock"]:
+            ANALYSIS_JOB_STORE["jobs"][job_id] = {
+                "rows": [],
+                "processed": 0,
+                "failed": 0,
+                "total": len(stock_records),
+                "done": False,
+                "error": None,
+            }
+        worker = threading.Thread(target=run_stock_analysis_job, args=(job_id, stock_records, ANALYSIS_JOB_STORE), daemon=True)
+        worker.start()
+        st.session_state["analysis_job_id"] = job_id
+        st.session_state["analysis_market"] = market
+    else:
+        st.warning("선택한 페이지에서 종목 목록을 가져오지 못했습니다.")
 
-        progress_bar = st.progress(0, text="분석 시작...")
-        for i, (_, row) in enumerate(market_df.iterrows()):
-            res = analyze_stock(row['종목코드'], row['종목명'], row['등락률'])
-            if res:
-                results.append(res)
-                df_all = pd.DataFrame(results, columns=COLUMNS)
-                df_all = df_all.sort_values('총점', ascending=False).reset_index(drop=True)
-                st.session_state['df_all'] = df_all
-
-                update_metrics(df_all)
-                display_df = apply_filter(df_all, st.session_state.filter)
-                result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
-                with main_result_area.container():
-                    show_styled_dataframe(display_df)
-
-            progress_bar.progress((i + 1) / len(market_df), text=f"분석 중: {row['종목명']} ({i+1}/{len(market_df)})")
-
-        progress_bar.empty()
-        st.success("✅ 분석 완료!")
-        completed_df = st.session_state.get("df_all", pd.DataFrame(columns=COLUMNS))
-        if not completed_df.empty:
-            display_df = apply_filter(completed_df, st.session_state.filter)
-            result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
-            main_result_area.empty()
-            show_styled_dataframe(display_df, selectable=True)
+active_job_id = st.session_state.get("analysis_job_id")
+if active_job_id:
+    render_analysis_progress(active_job_id, st.session_state.get("analysis_market", market))
 
 if not start_btn and 'df_all' in st.session_state:
     df = st.session_state['df_all']
     display_df = apply_filter(df, st.session_state.filter)
-    update_metrics(df)
-    result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
-    show_styled_dataframe(display_df, selectable=True)
+    if not active_job_id:
+        update_metrics(df)
+        result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
+        show_styled_dataframe(display_df, selectable=True)
 
-    if not display_df.empty:
+    if not active_job_id and not display_df.empty:
         email_summary = display_df[['종목명', '현재가', '총점', '신호', '매집(20일)', '일목(일봉)', '일목(주봉)']].to_string(index=False)
         encoded_body = urllib.parse.quote(f"주식 분석 리포트\n\n{email_summary}")
         mailto_url = f"mailto:?subject=주식리포트&body={encoded_body}"
@@ -1044,7 +1156,7 @@ if not start_btn and 'df_all' in st.session_state:
             f'text-align:center;font-weight:bold;">📧 현재 리스트 Outlook 전송</div></a>',
             unsafe_allow_html=True
         )
-elif 'df_all' not in st.session_state:
+elif not active_job_id and 'df_all' not in st.session_state:
     with main_result_area.container():
         st.info("왼쪽 사이드바에서 '분석 시작' 버튼을 눌러주세요.")
 
