@@ -6,10 +6,69 @@ import time
 import io
 import urllib.parse
 import urllib3
-from datetime import datetime
+import os
+import re
+import sqlite3
+from datetime import datetime, date
 
 # Bosch 사내망 환경 경고 차단
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+WATCHLIST_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_watchlist.db")
+
+def init_watchlist_db():
+    with sqlite3.connect(WATCHLIST_DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS watchlist (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                market TEXT NOT NULL,
+                added_at TEXT NOT NULL,
+                baseline_date TEXT NOT NULL,
+                baseline_price REAL NOT NULL
+            )
+        """)
+
+def get_watchlist():
+    with sqlite3.connect(WATCHLIST_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute("SELECT * FROM watchlist ORDER BY added_at DESC, name")]
+
+def save_watch_stock(code, name, market, baseline_date, baseline_price):
+    with sqlite3.connect(WATCHLIST_DB_PATH) as conn:
+        cursor = conn.execute(
+            "INSERT INTO watchlist (code, name, market, added_at, baseline_date, baseline_price) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(code) DO NOTHING",
+            (code, name, market, date.today().isoformat(), baseline_date, float(baseline_price)),
+        )
+        return cursor.rowcount == 1
+
+def delete_watch_stocks(codes):
+    if not codes:
+        return
+    with sqlite3.connect(WATCHLIST_DB_PATH) as conn:
+        conn.executemany("DELETE FROM watchlist WHERE code=?", [(code,) for code in codes])
+
+def rerun_streamlit():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+def get_watch_baseline(code, requested_date):
+    prices = get_cached_watch_price_data(code)
+    if prices.empty:
+        raise ValueError("시세 데이터를 가져오지 못했습니다.")
+    target = pd.Timestamp(requested_date)
+    eligible = prices[prices["날짜"].dt.normalize() <= target]
+    if eligible.empty:
+        raise ValueError("선택한 기준일 이전의 거래 데이터가 없습니다.")
+    row = eligible.iloc[-1]
+    return row["날짜"].strftime("%Y-%m-%d"), float(row["종가"])
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_cached_watch_price_data(code):
+    return get_price_data(code, max_pages=10, page_size=60)
 
 # ─────────────────────────────────────────────
 # 1. 네이버 개편 대응 API 헬퍼 함수
@@ -785,6 +844,133 @@ def apply_filter(df, f):
     elif f == "매도": return df[df['신호'].str.contains("매도|하락거래량급증|분산의심", regex=True)]
     return df
 
+def render_watchlist(market_name):
+    init_watchlist_db()
+    st.markdown("---")
+    st.subheader("📌 추세 관찰 목록")
+    baseline_date = st.date_input("관찰 기준일", value=date.today(), max_value=date.today(), key="watch_baseline_date")
+    analysis_df = st.session_state.get("df_all", pd.DataFrame(columns=COLUMNS))
+    options = {}
+    if not analysis_df.empty:
+        options = {
+            f"{row['종목명']} ({row['코드']})": (str(row['코드']).zfill(6), str(row['종목명']))
+            for _, row in analysis_df.drop_duplicates(subset=["코드"]).iterrows()
+        }
+
+    add_col, manual_col = st.columns(2)
+    with add_col:
+        with st.form("watch_add_from_analysis"):
+            selected_labels = st.multiselect("분석 결과에서 추가", options=list(options))
+            add_selected = st.form_submit_button("선택 종목 추가", use_container_width=True)
+        if add_selected:
+            added = 0
+            skipped = 0
+            for label in selected_labels:
+                code, name = options[label]
+                try:
+                    actual_date, price = get_watch_baseline(code, baseline_date)
+                    if save_watch_stock(code, name, market_name, actual_date, price):
+                        added += 1
+                    else:
+                        skipped += 1
+                except Exception as error:
+                    st.warning(f"{name} ({code}) 추가 실패: {error}")
+            if added:
+                st.success(f"{added}개 종목을 관찰 목록에 추가했습니다.")
+            if skipped:
+                st.info(f"이미 관찰 목록에 있는 종목 {skipped}개는 기존 기준을 유지했습니다.")
+    with manual_col:
+        with st.form("watch_add_manual"):
+            manual_code = st.text_input("종목코드", max_chars=6, placeholder="예: 005930")
+            manual_name = st.text_input("종목명", placeholder="예: 삼성전자")
+            add_manual = st.form_submit_button("직접 입력 종목 추가", use_container_width=True)
+        if add_manual:
+            normalized_code = manual_code.strip()
+            normalized_name = manual_name.strip()
+            if not re.fullmatch(r"\d{1,6}", normalized_code) or not normalized_name:
+                st.error("1~6자리 종목코드와 종목명을 입력하세요.")
+            else:
+                normalized_code = normalized_code.zfill(6)
+                try:
+                    actual_date, price = get_watch_baseline(normalized_code, baseline_date)
+                    if save_watch_stock(normalized_code, normalized_name, market_name, actual_date, price):
+                        st.success(f"{normalized_name}을(를) {actual_date} 기준으로 추가했습니다.")
+                    else:
+                        st.info("이미 관찰 목록에 있는 종목입니다. 기존 기준일과 기준가는 유지했습니다.")
+                except Exception as error:
+                    st.error(f"종목을 추가하지 못했습니다: {error}")
+
+    watch_items = get_watchlist()
+    if not watch_items:
+        st.info("관찰할 종목을 추가하면 기준가 대비 변화율과 추세 그래프가 여기에 표시됩니다.")
+        return
+
+    if st.button("시세 새로고침", key="watch_refresh"):
+        get_cached_watch_price_data.clear()
+
+    price_data_by_code = {}
+    table_rows = []
+    for item in watch_items:
+        try:
+            prices = get_cached_watch_price_data(item["code"])
+            if prices.empty:
+                raise ValueError("시세 자료 없음")
+            latest = prices.iloc[-1]
+            baseline_price = float(item["baseline_price"])
+            change = float(latest["종가"]) - baseline_price
+            change_pct = change / baseline_price * 100 if baseline_price else 0.0
+            table_rows.append({
+                "종목명": item["name"],
+                "코드": item["code"],
+                "기준일": item["baseline_date"],
+                "기준가": f"{baseline_price:,.0f}",
+                "최근 거래일": latest["날짜"].strftime("%Y-%m-%d"),
+                "현재가": f"{float(latest['종가']):,.0f}",
+                "변화": f"{change:+,.0f}",
+                "변화율": f"{change_pct:+.2f}%",
+            })
+            price_data_by_code[item["code"]] = prices
+        except Exception as error:
+            table_rows.append({"종목명": item["name"], "코드": item["code"], "기준일": item["baseline_date"], "오류": str(error)})
+
+    if table_rows:
+        watch_df = pd.DataFrame(table_rows)
+        st.dataframe(watch_df, use_container_width=True, hide_index=True)
+
+    chartable_items = [item for item in watch_items if item["code"] in price_data_by_code]
+    if chartable_items:
+        chart_labels = {f"{item['name']} ({item['code']})": item for item in chartable_items}
+        selected_chart = st.selectbox("변화 추세 그래프", options=list(chart_labels), key="watch_chart_stock")
+        selected_item = chart_labels[selected_chart]
+        prices = price_data_by_code[selected_item["code"]]
+        start_date = pd.Timestamp(selected_item["baseline_date"])
+        chart_prices = prices[prices["날짜"].dt.normalize() >= start_date].copy()
+        baseline_price = float(selected_item["baseline_price"])
+        if not chart_prices.empty and baseline_price:
+            chart_prices["기준가 대비 (%)"] = (chart_prices["종가"] / baseline_price - 1) * 100
+            chart_prices["기준선 (0%)"] = 0.0
+            chart_data = chart_prices.set_index("날짜")[["기준가 대비 (%)", "기준선 (0%)"]]
+            current_pct = float(chart_prices.iloc[-1]["기준가 대비 (%)"])
+            st.metric(
+                f"{selected_item['name']} 기준가 대비",
+                f"{current_pct:+.2f}%",
+                delta=f"{float(chart_prices.iloc[-1]['종가']) - baseline_price:+,.0f}원",
+                help=f"기준가 {baseline_price:,.0f}원 · 기준일 {selected_item['baseline_date']}",
+            )
+            st.line_chart(chart_data, use_container_width=True)
+
+    with st.form("watch_remove_form"):
+        remove_labels = st.multiselect(
+            "목록에서 제거",
+            options=[f"{item['name']} ({item['code']})" for item in watch_items],
+        )
+        remove_submitted = st.form_submit_button("선택 종목 제거")
+    if remove_submitted and remove_labels:
+        codes_by_label = {f"{item['name']} ({item['code']})": item["code"] for item in watch_items}
+        delete_watch_stocks([codes_by_label[label] for label in remove_labels])
+        st.success(f"{len(remove_labels)}개 종목을 관찰 목록에서 제거했습니다.")
+        rerun_streamlit()
+
 if start_btn:
     st.session_state.filter = "전체"
     st.session_state['market_trend'] = get_market_trend(market)
@@ -835,3 +1021,5 @@ if not start_btn and 'df_all' in st.session_state:
 elif 'df_all' not in st.session_state:
     with main_result_area:
         st.info("왼쪽 사이드바에서 '분석 시작' 버튼을 눌러주세요.")
+
+render_watchlist(market)
