@@ -208,6 +208,24 @@ def calc_cci(df, period=20):
     mad = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
     return (tp - ma) / (0.015 * mad.replace(0, np.nan))
 
+def find_recent_cloud_cross(frame, direction, lookback=5):
+    """Return bars since a real close-through-cloud cross, or None."""
+    start = max(1, len(frame) - lookback)
+    for index in range(len(frame) - 1, start - 1, -1):
+        current = frame.iloc[index]
+        previous = frame.iloc[index - 1]
+        cloud_top = max(current["senkou_a"], current["senkou_b"])
+        cloud_bottom = min(current["senkou_a"], current["senkou_b"])
+        previous_close = previous["종가"]
+        current_close = current["종가"]
+        if direction == "up":
+            crossed = previous_close <= cloud_top < current_close and current_close > previous_close
+        else:
+            crossed = previous_close >= cloud_bottom > current_close and current_close < previous_close
+        if crossed:
+            return len(frame) - 1 - index
+    return None
+
 def get_market_trend(market):
     index_code = "0001" if market == "KOSPI" else "1001"
     index_name = "코스피" if market == "KOSPI" else "코스닥"
@@ -428,24 +446,15 @@ def analyze_stock(code, name, current_change):
         ct_now, cb_now = cloud_top(last), cloud_bot(last)
         above_now, below_now = price_now > ct_now, price_now < cb_now
 
-        breakout_days = None
+        breakout_days = find_recent_cloud_cross(df_final, "up")
+        breakdown_days = find_recent_cloud_cross(df_final, "down")
+
         if above_now:
-            for days_ago, row in enumerate([prev, prev2, prev3, prev4], start=1):
-                if row['종가'] <= cloud_top(row):
-                    if price_now > row['종가'] and not (last['종가'] < prev['종가'] < prev2['종가']):
-                        breakout_days = days_ago
-                        break
-
-        breakdown_days = None
-        if below_now:
-            for days_ago, row in enumerate([prev, prev2, prev3, prev4], start=1):
-                if row['종가'] >= cloud_bot(row):
-                    if price_now < row['종가'] and not (last['종가'] > prev['종가'] > prev2['종가']):
-                        breakdown_days = days_ago
-                        break
-
-        if above_now: ichimoku_status = f"🔥 상향돌파({breakout_days}일전)" if breakout_days is not None else "📈 구름대 위"
-        elif below_now: ichimoku_status = f"🧊 하향이탈({breakdown_days}일전)" if breakdown_days is not None else "📉 구름대 아래"
+            breakout_age = "당일" if breakout_days == 0 else f"{breakout_days}일전"
+            ichimoku_status = f"🔥 상향돌파({breakout_age})" if breakout_days is not None else "📈 구름대 위"
+        elif below_now:
+            breakdown_age = "당일" if breakdown_days == 0 else f"{breakdown_days}일전"
+            ichimoku_status = f"🧊 하향이탈({breakdown_age})" if breakdown_days is not None else "📉 구름대 아래"
         else:
             prior_rows = [prev, prev2, prev3, prev4]
             was_above = any(r['종가'] > cloud_top(r) for r in prior_rows)
@@ -507,26 +516,15 @@ def analyze_stock(code, name, current_change):
                 w_above_now = w_price_now > w_ct_now
                 w_below_now = w_price_now < w_cb_now
 
-                w_breakout_weeks = None
-                if w_above_now:
-                    for weeks_ago, row in enumerate([w_prev, w_prev2, w_prev3, w_prev4], start=1):
-                        if row['종가'] <= w_cloud_top(row):
-                            if w_price_now > row['종가'] and not (w_last['종가'] < w_prev['종가'] < w_prev2['종가']):
-                                w_breakout_weeks = weeks_ago
-                                break
-
-                w_breakdown_weeks = None
-                if w_below_now:
-                    for weeks_ago, row in enumerate([w_prev, w_prev2, w_prev3, w_prev4], start=1):
-                        if row['종가'] >= w_cloud_bot(row):
-                            if w_price_now < row['종가'] and not (w_last['종가'] > w_prev['종가'] > w_prev2['종가']):
-                                w_breakdown_weeks = weeks_ago
-                                break
+                w_breakout_weeks = find_recent_cloud_cross(df_w_final, "up")
+                w_breakdown_weeks = find_recent_cloud_cross(df_w_final, "down")
 
                 if w_above_now:
-                    w_ichimoku_status = f"🔥 상향돌파({w_breakout_weeks}주전)" if w_breakout_weeks is not None else "📈 구름대 위"
+                    breakout_age = "이번주" if w_breakout_weeks == 0 else f"{w_breakout_weeks}주전"
+                    w_ichimoku_status = f"🔥 상향돌파({breakout_age})" if w_breakout_weeks is not None else "📈 구름대 위"
                 elif w_below_now:
-                    w_ichimoku_status = f"🧊 하향이탈({w_breakdown_weeks}주전)" if w_breakdown_weeks is not None else "📉 구름대 아래"
+                    breakdown_age = "이번주" if w_breakdown_weeks == 0 else f"{w_breakdown_weeks}주전"
+                    w_ichimoku_status = f"🧊 하향이탈({breakdown_age})" if w_breakdown_weeks is not None else "📉 구름대 아래"
                 else:
                     w_prior_rows = [w_prev, w_prev2, w_prev3, w_prev4]
                     w_was_above = any(r['종가'] > w_cloud_top(r) for r in w_prior_rows)
@@ -574,10 +572,6 @@ def analyze_stock(code, name, current_change):
             last, prev, ichimoku_status, w_ichimoku_status, cci_now, cci_prev,
             weekly_two_bullish, ma20_breakout, dual_cloud_breakout, accum_level
         )
-        atr_value = last['ATR14']
-        stop_reference = (max(0, int(last['종가'] - 1.5 * atr_value))
-                  if pd.notna(atr_value) else 0)
-
         chart_url = f"https://finance.daum.net/quotes/A{code}#chart"
 
         return [
@@ -585,7 +579,7 @@ def analyze_stock(code, name, current_change):
             int(last['종가']), disparity_fmt,
             score, signal,
             ichimoku_status, w_ichimoku_status, ma_text,
-            cci_display, vol_display, accum_display, stop_reference,
+            cci_display, vol_display, accum_display,
             chart_url
         ]
     except Exception as e:
@@ -597,7 +591,7 @@ def analyze_stock(code, name, current_change):
 COLUMNS = ['코드', '종목명', '등락률', '현재가', '이격률',
            '총점', '신호',
            '일목(일봉)', '일목(주봉)', 'MA크로스',
-           'CCI', '거래량', '매집(20일)', '손절참고',
+           'CCI', '거래량', '매집(20일)',
            '차트']
 
 def style_signal(val):
@@ -775,7 +769,6 @@ def show_styled_dataframe(dataframe, selectable=False):
         "이격률": st.column_config.TextColumn("이격"),
         "거래량": st.column_config.TextColumn("거래량"),
         "매집(20일)": st.column_config.TextColumn("매집(20일)", help="최근 20일 누적거래량 ÷ 직전 20일 누적거래량 / 20일 가격변화"),
-        "손절참고": st.column_config.NumberColumn("손절 참고"),
         "차트": st.column_config.LinkColumn("차트", display_text="📊"),
         "신호": st.column_config.TextColumn("신호"),
         "일목(일봉)": st.column_config.TextColumn("일목(일)"),
