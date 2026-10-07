@@ -9,6 +9,7 @@ import urllib3
 import os
 import re
 import sqlite3
+import uuid
 from datetime import datetime, date
 
 # Bosch 사내망 환경 경고 차단
@@ -689,11 +690,36 @@ def compress_display(df: pd.DataFrame) -> pd.DataFrame:
     d['신호'] = d['신호'].str.strip()
     return d
 
-def show_styled_dataframe(dataframe):
+def show_styled_dataframe(dataframe, selectable=False):
     if dataframe.empty:
         st.write("분석된 데이터가 없습니다.")
+        if selectable:
+            st.session_state["analysis_watch_selected"] = []
         return
     disp = compress_display(dataframe)
+    if selectable:
+        editor_df = disp.copy()
+        editor_df.insert(0, "관찰 선택", False)
+        disabled_columns = [column for column in editor_df.columns if column != "관찰 선택"]
+        edited_df = st.data_editor(
+            editor_df,
+            use_container_width=True,
+            hide_index=True,
+            disabled=disabled_columns,
+            column_config={
+                "관찰 선택": st.column_config.CheckboxColumn(
+                    "관찰",
+                    help="관찰 목록에 추가할 종목을 체크하세요.",
+                    default=False,
+                ),
+                "차트": st.column_config.LinkColumn("차트", display_text="📊"),
+            },
+            key=f"analysis_watch_selector_{st.session_state.get('analysis_run_id', 'current')}_{st.session_state.get('filter', '전체')}",
+        )
+        selected = edited_df[edited_df["관찰 선택"]]
+        st.session_state["analysis_watch_selected"] = selected[["코드", "종목명"]].to_dict("records")
+        st.caption(f"관찰 목록에 추가할 종목 {len(selected)}개 선택됨")
+        return
     dynamic_height = (len(disp) + 1) * 35 + 3
 
     styled = (
@@ -849,24 +875,17 @@ def render_watchlist(market_name):
     st.markdown("---")
     st.subheader("📌 추세 관찰 목록")
     baseline_date = st.date_input("관찰 기준일", value=date.today(), max_value=date.today(), key="watch_baseline_date")
-    analysis_df = st.session_state.get("df_all", pd.DataFrame(columns=COLUMNS))
-    options = {}
-    if not analysis_df.empty:
-        options = {
-            f"{row['종목명']} ({row['코드']})": (str(row['코드']).zfill(6), str(row['종목명']))
-            for _, row in analysis_df.drop_duplicates(subset=["코드"]).iterrows()
-        }
-
     add_col, manual_col = st.columns(2)
     with add_col:
-        with st.form("watch_add_from_analysis"):
-            selected_labels = st.multiselect("분석 결과에서 추가", options=list(options))
-            add_selected = st.form_submit_button("선택 종목 추가", use_container_width=True)
+        selected_stocks = st.session_state.get("analysis_watch_selected", [])
+        st.caption(f"분석 결과에서 체크한 종목: {len(selected_stocks)}개")
+        add_selected = st.button("체크한 종목 관찰 목록에 추가", use_container_width=True, disabled=not selected_stocks)
         if add_selected:
             added = 0
             skipped = 0
-            for label in selected_labels:
-                code, name = options[label]
+            for selected_stock in selected_stocks:
+                code = str(selected_stock["코드"]).zfill(6)
+                name = str(selected_stock["종목명"])
                 try:
                     actual_date, price = get_watch_baseline(code, baseline_date)
                     if save_watch_stock(code, name, market_name, actual_date, price):
@@ -972,6 +991,8 @@ def render_watchlist(market_name):
         rerun_streamlit()
 
 if start_btn:
+    st.session_state["analysis_run_id"] = uuid.uuid4().hex
+    st.session_state["analysis_watch_selected"] = []
     st.session_state.filter = "전체"
     st.session_state['market_trend'] = get_market_trend(market)
     market_trend_area.info(st.session_state['market_trend'])
@@ -999,6 +1020,12 @@ if start_btn:
 
         progress_bar.empty()
         st.success("✅ 분석 완료!")
+        completed_df = st.session_state.get("df_all", pd.DataFrame(columns=COLUMNS))
+        if not completed_df.empty:
+            display_df = apply_filter(completed_df, st.session_state.filter)
+            result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
+            with main_result_area:
+                show_styled_dataframe(display_df, selectable=True)
 
 if not start_btn and 'df_all' in st.session_state:
     df = st.session_state['df_all']
@@ -1006,7 +1033,7 @@ if not start_btn and 'df_all' in st.session_state:
     update_metrics(df)
     result_title.subheader(f"🔍 결과 리스트 ({st.session_state.filter} / {len(display_df)}개)")
     with main_result_area:
-        show_styled_dataframe(display_df)
+        show_styled_dataframe(display_df, selectable=True)
 
     if not display_df.empty:
         email_summary = display_df[['종목명', '현재가', '총점', '신호', '매집(20일)', '일목(일봉)', '일목(주봉)']].to_string(index=False)
