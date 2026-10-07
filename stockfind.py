@@ -868,17 +868,27 @@ st.markdown("---")
 result_title = st.empty()
 main_result_area = st.empty()
 
-def update_metrics(df):
+def update_metrics(df, in_fragment=False):
     buy_kw = '적극매수|매수관심|주간돌파|양·주봉 동시돌파|매집후돌파'
     fall_kw = '하락가속|추세하락|적극매도|하락거래량급증|분산의심'
     sell_kw = '매도관심|적극매도|하락거래량급증|분산의심'
-    total_metric.metric("전체", f"{len(df)}개")
-    buy_metric.metric("매수계열", f"{len(df[df['신호'].str.contains(buy_kw, regex=True)])}개")
-    entry_metric.metric("진입준비", f"{len(df[df['신호'].str.contains('진입준비|바닥탐색', regex=True)])}개")
-    accum_metric.metric("매집", f"{len(df[df['매집(20일)'].str.contains('매집', regex=False)])}개")
-    caution_metric.metric("구름대주의", f"{len(df[df['신호'].str.contains('구름대주의')])}개")
-    fall_metric.metric("하락계열", f"{len(df[df['신호'].str.contains(fall_kw, regex=True)])}개")
-    sell_metric.metric("매도관심↓", f"{len(df[df['신호'].str.contains(sell_kw, regex=True)])}개")
+    metrics = [
+        ("전체", len(df)),
+        ("매수계열", len(df[df['신호'].str.contains(buy_kw, regex=True)])),
+        ("진입준비", len(df[df['신호'].str.contains('진입준비|바닥탐색', regex=True)])),
+        ("매집", len(df[df['매집(20일)'].str.contains('매집', regex=False)])),
+        ("구름대주의", len(df[df['신호'].str.contains('구름대주의')])),
+        ("하락계열", len(df[df['신호'].str.contains(fall_kw, regex=True)])),
+        ("매도관심↓", len(df[df['신호'].str.contains(sell_kw, regex=True)])),
+    ]
+    if in_fragment:
+        metric_columns = st.columns(len(metrics))
+        for column, (label, value) in zip(metric_columns, metrics):
+            column.metric(label, f"{value}개")
+    else:
+        metric_targets = [total_metric, buy_metric, entry_metric, accum_metric, caution_metric, fall_metric, sell_metric]
+        for target, (label, value) in zip(metric_targets, metrics):
+            target.metric(label, f"{value}개")
 
 def apply_filter(df, f):
     if f == "매수": return df[df['신호'].str.contains("적극매수|매수관심|주간돌파|양·주봉 동시돌파|매집후돌파", regex=True)]
@@ -940,7 +950,7 @@ def render_analysis_progress(job_id, market_name):
     if snapshot["rows"]:
         dataframe = pd.DataFrame(snapshot["rows"], columns=COLUMNS)
         dataframe = dataframe.sort_values("총점", ascending=False).reset_index(drop=True)
-        update_metrics(dataframe)
+        update_metrics(dataframe, in_fragment=True)
         display_df = apply_filter(dataframe, st.session_state.get("filter", "전체"))
         show_styled_dataframe(display_df, selectable=True)
     else:
