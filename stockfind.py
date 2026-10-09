@@ -18,6 +18,40 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 WATCHLIST_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stock_watchlist.db")
 
+def get_supabase_config():
+    try:
+        config = st.secrets.get("supabase", {})
+    except Exception:
+        config = {}
+    url = config.get("url") or os.getenv("SUPABASE_URL")
+    key = config.get("service_role_key") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        return None
+    return url.rstrip("/"), key
+
+def supabase_request(method, table="watchlist", params=None, payload=None, prefer=None):
+    config = get_supabase_config()
+    if config is None:
+        raise RuntimeError("Supabase 설정이 없습니다.")
+    url, key = config
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+    response = requests.request(
+        method,
+        f"{url}/rest/v1/{table}",
+        headers=headers,
+        params=params,
+        json=payload,
+        timeout=15,
+    )
+    response.raise_for_status()
+    return response
+
 @st.cache_resource
 def get_analysis_job_store():
     return {"jobs": {}, "lock": threading.Lock()}
@@ -25,6 +59,8 @@ def get_analysis_job_store():
 ANALYSIS_JOB_STORE = get_analysis_job_store()
 
 def init_watchlist_db():
+    if get_supabase_config():
+        return
     with sqlite3.connect(WATCHLIST_DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS watchlist (
@@ -38,11 +74,29 @@ def init_watchlist_db():
         """)
 
 def get_watchlist():
+    if get_supabase_config():
+        response = supabase_request("GET", params={"select": "*", "order": "added_at.desc,name.asc"})
+        return response.json()
     with sqlite3.connect(WATCHLIST_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute("SELECT * FROM watchlist ORDER BY added_at DESC, name")]
 
 def save_watch_stock(code, name, market, baseline_date, baseline_price):
+    if get_supabase_config():
+        response = supabase_request(
+            "POST",
+            params={"on_conflict": "code"},
+            payload={
+                "code": code,
+                "name": name,
+                "market": market,
+                "added_at": date.today().isoformat(),
+                "baseline_date": baseline_date,
+                "baseline_price": float(baseline_price),
+            },
+            prefer="resolution=ignore-duplicates,return=representation",
+        )
+        return bool(response.json())
     with sqlite3.connect(WATCHLIST_DB_PATH) as conn:
         cursor = conn.execute(
             "INSERT INTO watchlist (code, name, market, added_at, baseline_date, baseline_price) VALUES (?, ?, ?, ?, ?, ?) "
@@ -53,6 +107,9 @@ def save_watch_stock(code, name, market, baseline_date, baseline_price):
 
 def delete_watch_stocks(codes):
     if not codes:
+        return
+    if get_supabase_config():
+        supabase_request("DELETE", params={"code": f"in.({','.join(codes)})"})
         return
     with sqlite3.connect(WATCHLIST_DB_PATH) as conn:
         conn.executemany("DELETE FROM watchlist WHERE code=?", [(code,) for code in codes])
@@ -572,7 +629,7 @@ def analyze_stock(code, name, current_change):
             last, prev, ichimoku_status, w_ichimoku_status, cci_now, cci_prev,
             weekly_two_bullish, ma20_breakout, dual_cloud_breakout, accum_level
         )
-        chart_url = f"https://finance.daum.net/quotes/A{code}#chart"
+        chart_url = f"https://stock.naver.com/fchart/domestic/stock/{code}"
 
         return [
             code, name, current_change,
@@ -994,6 +1051,10 @@ def render_watchlist(market_name):
     init_watchlist_db()
     st.markdown("---")
     st.subheader("📌 추세 관찰 목록")
+    if get_supabase_config():
+        st.caption("저장소: Supabase 영구 DB")
+    else:
+        st.warning("Supabase가 연결되지 않았습니다. 현재 목록은 임시 SQLite에 저장되며, Streamlit Cloud 재시작 후 사라질 수 있습니다.")
     baseline_date = st.date_input("관찰 기준일", value=date.today(), max_value=date.today(), key="watch_baseline_date")
     add_col, manual_col = st.columns(2)
     with add_col:
@@ -1039,7 +1100,11 @@ def render_watchlist(market_name):
                 except Exception as error:
                     st.error(f"종목을 추가하지 못했습니다: {error}")
 
-    watch_items = get_watchlist()
+    try:
+        watch_items = get_watchlist()
+    except Exception as error:
+        st.error(f"관찰 목록을 불러오지 못했습니다. Supabase 설정과 watchlist 테이블을 확인하세요: {error}")
+        return
     if not watch_items:
         st.info("관찰할 종목을 추가하면 기준가 대비 변화율과 추세 그래프가 여기에 표시됩니다.")
         return
